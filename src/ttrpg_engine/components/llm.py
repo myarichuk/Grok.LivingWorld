@@ -1,36 +1,9 @@
-"""Game-loop components for a deterministic TTRPG kernel."""
+"""LLM-facing command and response components."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
-
-
-class TurnPhase(str, Enum):
-    IDLE = "IDLE"
-    WAITING_FOR_LLM = "WAITING_FOR_LLM"
-    RESOLVING = "RESOLVING"
-    COMMITTED = "COMMITTED"
-
-
-@dataclass(frozen=True)
-class KernelState:
-    phase: TurnPhase = TurnPhase.IDLE
-    turn_id: int = 0
-    time_minutes: int = 0
-    current_location: str = ""
-    last_interrupt_time: int = 0
-    tension_cooldown: int = 30
-    rng_seed: int = 1337
-    rng_draws: int = 0
-    pending_time_advance_minutes: int = 0
-
-
-@dataclass(frozen=True)
-class RequestRegistry:
-    pending_request_ids: tuple[str, ...] = ()
-    applied_request_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -70,3 +43,15 @@ class ResolvedLLMResult:
     request_type: str
     turn_id: int
     payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LLMActorRegistrationCommand:
+    actor_name: str
+    scene_id: str
+    long_term_goals: tuple[str, ...]
+    faction_relations: dict[str, int]
+    possible_goals: tuple[str, ...] = ()
+    actor_entity_id: int | None = None
+    actor_kind: str = "llm_npc"
+    suggested_impulse: str = ""

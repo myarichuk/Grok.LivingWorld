@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from ttrpg_engine.components import ActorComponent
+
 AbilityName = Literal[
     "strength",
     "dexterity",
@@ -106,7 +108,7 @@ class SurvivalStatus:
 
 
 @dataclass(frozen=True)
-class Actor5e:
+class Actor5e(ActorComponent):
     name: str
     race: str
     class_name: str

@@ -5,9 +5,53 @@ Generic ECS primitives separated from TTRPG domain implementations.
 ## Structure
 
 - `src/ecs/` - generic ECS core (`World`, `GlobalSystem`, `SystemResult`).
-- `src/ttrpg_engine/` - deterministic game-loop state machine and LLM request flow.
+- `src/ttrpg_engine/` - deterministic game-loop state machine, actor agency, LLM gateway.
+  - `components/kernel.py` - turn + kernel state
+  - `components/llm.py` - LLM command/response components
+  - `components/actor.py` - actor markers, agency, goals, faction relations
+  - `events.py` - pub/sub event types
 - `src/ttrpg_5e/` - D&D 5e actor components plus actor factory abstraction.
 - `tests/` - unit tests for ECS core, 5e factory, and state machine behavior.
+
+## ECS query style
+
+The ECS core now uses query objects inspired by DefaultEcs:
+
+```python
+from ecs import EntityQuery
+
+# has Health, does not have Hidden, and has at least one of Position/Token
+query = EntityQuery(
+    all_of=(Health,),
+    none_of=(Hidden,),
+    any_of=(Position, Token),
+)
+entities = world.query(query)
+```
+
+You can also use the fluent builder:
+
+```python
+query = (
+    world.get_entities()
+    .with_all(Health, Position)
+    .without(Hidden)
+    .with_any(Token, Marker)
+    .as_query()
+)
+entity_set = world.create_entity_set(query)  # cached view
+```
+
+## Pub/sub broker
+
+`World` also acts as an in-process broker:
+
+```python
+sub_id = world.subscribe(ActorImpulseEvent, handler)
+world.publish(ActorImpulseEvent(...))
+events = world.consume_published_events(ActorImpulseEvent)
+world.unsubscribe(sub_id)
+```
 
 ## Quick start
 
