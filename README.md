@@ -8,14 +8,26 @@ Lightweight ECS primitives with modular systems that each return an LLM-forwarda
 - `src/livingworld_ecs/components.py` – sample component dataclasses.
 - `src/livingworld_ecs/systems.py` – sample systems returning structured payloads.
 - `tests/` – unit tests covering world operations, per-system outputs, and aggregation.
-- `scripts/setup.sh` and `scripts/setup.ps1` – Unix/PowerShell virtual environment bootstrap.
+- `scripts/setup.sh`, `scripts/setup.ps1`, and `scripts/setup.bat` – Unix/Windows virtual environment bootstrap.
 
 ## Quick start
 
+Unix (bash/zsh):
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+./scripts/setup.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\setup.ps1
+```
+
+Windows Command Prompt:
+
+```bat
+scripts\setup.bat
 ```
 
 ```python
