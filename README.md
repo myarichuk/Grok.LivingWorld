@@ -148,3 +148,11 @@ python scripts/grok_repl_doctor.py
 
 The doctor script validates that `src` is on `sys.path` and that core modules import
 cleanly before you run turn logic.
+
+To detect escaped/corrupted source blobs after a deploy/fetch step, run:
+
+```bash
+python scripts/check_source_integrity.py
+```
+
+This catches patterns like `text"""...`, `\__all__`, and single-line escaped source.
