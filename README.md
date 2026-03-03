@@ -156,3 +156,11 @@ python scripts/check_source_integrity.py
 ```
 
 This catches patterns like `text"""...`, `\__all__`, and single-line escaped source.
+
+If those checks fail due to escaped package entrypoints, run:
+
+```bash
+python scripts/repair_escaped_init_files.py
+python scripts/check_source_integrity.py
+python scripts/grok_repl_doctor.py
+```

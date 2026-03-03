@@ -7,6 +7,7 @@ strings (for example: literal "\\n", "\\__all__", or leading "text\"\"\"").
 
 from __future__ import annotations
 
+import ast
 import pathlib
 
 SUSPICIOUS_SNIPPETS = (
@@ -45,6 +46,17 @@ def main() -> int:
         if findings:
             failed = True
             print(f"FAIL {path.relative_to(root)} :: {'; '.join(findings)}")
+            continue
+
+        try:
+            ast.parse(content, filename=str(path))
+        except SyntaxError as exc:
+            failed = True
+            print(
+                "FAIL "
+                f"{path.relative_to(root)} :: syntax error at line {exc.lineno}: "
+                f"{exc.msg}"
+            )
 
     if failed:
         print("status=failed")
