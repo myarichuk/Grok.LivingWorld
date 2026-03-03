@@ -131,3 +131,20 @@ CommitTurnSystem().run(world, [kernel])
 ruff check .
 pytest
 ```
+
+## Grok REPL Troubleshooting
+
+If Grok reports `ModuleNotFoundError: No module named 'ttrpg_engine'`:
+
+```bash
+PYTHONPATH=src python -c "from ecs import World; import ttrpg_engine; print('ok')"
+```
+
+If Grok session files were partially written/truncated, run:
+
+```bash
+python scripts/grok_repl_doctor.py
+```
+
+The doctor script validates that `src` is on `sys.path` and that core modules import
+cleanly before you run turn logic.
