@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from livingworld_ecs.components import Health
-from livingworld_ecs.core import GlobalSystem, SystemResult, World
+from ecs.core import GlobalSystem, SystemResult, World
+
+
+class Health:
+    def __init__(self, current: int, maximum: int) -> None:
+        self.current = current
+        self.maximum = maximum
 
 
 class _FakeSystem:
@@ -38,6 +43,27 @@ def test_get_component_raises_actionable_error_when_component_missing() -> None:
 
     with pytest.raises(KeyError, match="missing component Health"):
         world.get_component(entity, Health)
+
+
+def test_remove_component_deletes_entity_component_mapping() -> None:
+    world = World()
+    entity = world.create_entity()
+    world.add_component(entity, Health(3, 10))
+
+    removed = world.remove_component(entity, Health)
+
+    assert removed is True
+    assert world.has_component(entity, Health) is False
+
+
+def test_destroy_entity_removes_all_components() -> None:
+    world = World()
+    entity = world.create_entity()
+    world.add_component(entity, Health(6, 10))
+
+    world.destroy_entity(entity)
+
+    assert world.has_component(entity, Health) is False
 
 
 def test_global_system_runs_each_system_and_preserves_result_order() -> None:

@@ -16,6 +16,18 @@ if %errorlevel%==0 (
 
 call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
-python -m pip install -e .[dev]
 
+python -m pip install setuptools wheel
+if %errorlevel%==0 (
+    python -m pip install -e .[dev]
+    if %errorlevel%==0 (
+        echo Installed package in editable mode with dev extras.
+        goto done
+    )
+)
+
+echo Editable install failed; installing direct dev dependencies instead.
+python -m pip install numpy pytest ruff
+
+:done
 echo Environment ready. Activate with: .venv\Scripts\activate.bat

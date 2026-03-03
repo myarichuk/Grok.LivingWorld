@@ -3,12 +3,12 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "livingworld-ecs"
+name = "ecs"
 version = "0.1.0"
-description = "Lightweight ECS with LLM-friendly system outputs"
+description = "Generic ECS core with TTRPG engine and 5e module"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24"]
+dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "ruff>=0.1.0"]

@@ -1,4 +1,4 @@
-"""Lightweight ECS primitives for LLM-oriented system outputs."""
+"""Generic ECS primitives."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ class SystemResult:
     payload: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a dictionary representation for forwarding to an LLM."""
         return asdict(self)
 
 
@@ -49,6 +48,23 @@ class World:
 
     def has_component(self, entity_id: EntityId, component_type: type[Any]) -> bool:
         return entity_id in self._components.get(component_type, {})
+
+    def remove_component(self, entity_id: EntityId, component_type: type[Any]) -> bool:
+        entity_components = self._components.get(component_type)
+        if entity_components is None:
+            return False
+        if entity_id not in entity_components:
+            return False
+        del entity_components[entity_id]
+        if not entity_components:
+            del self._components[component_type]
+        return True
+
+    def destroy_entity(self, entity_id: EntityId) -> None:
+        for component_type, entity_components in list(self._components.items()):
+            entity_components.pop(entity_id, None)
+            if not entity_components:
+                del self._components[component_type]
 
     def query_entities(self, component_types: tuple[type[Any], ...]) -> list[EntityId]:
         if not component_types:
