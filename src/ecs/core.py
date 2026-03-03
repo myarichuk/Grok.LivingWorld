@@ -217,24 +217,28 @@ class World:
         return self.query(EntityQuery(all_of=component_types))
 
     def subscribe(self, event_type: type[Any], handler: Callable[[Any], None]) -> int:
+        """Subscribe a handler to published events matching ``event_type``."""
         subscription_id = self._next_subscription_id
         self._next_subscription_id += 1
         self._subscriptions[subscription_id] = (event_type, handler)
         return subscription_id
 
     def unsubscribe(self, subscription_id: int) -> bool:
+        """Unregister an existing subscription and report whether it existed."""
         if subscription_id not in self._subscriptions:
             return False
         del self._subscriptions[subscription_id]
         return True
 
     def publish(self, event: Any) -> None:
+        """Publish an event to subscribers and store it in the in-memory queue."""
         self._event_queue.append(event)
         for subscribed_type, handler in self._subscriptions.values():
             if isinstance(event, subscribed_type):
                 handler(event)
 
     def get_published_events(self, event_type: type[Any] | None = None) -> list[Any]:
+        """Return queued events, optionally filtered by ``event_type``."""
         if event_type is None:
             return list(self._event_queue)
         return [event for event in self._event_queue if isinstance(event, event_type)]
@@ -242,6 +246,7 @@ class World:
     def consume_published_events(
         self, event_type: type[Any] | None = None
     ) -> list[Any]:
+        """Return and remove queued events, optionally filtered by ``event_type``."""
         if event_type is None:
             events = list(self._event_queue)
             self._event_queue.clear()

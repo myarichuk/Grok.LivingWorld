@@ -6,9 +6,13 @@ from ecs.core import EntityQuery, World
 from ttrpg_5e.components import AbilityScores, Actor5e
 from ttrpg_5e.factory import Actor5eFactory, ActorBuild5e
 from ttrpg_engine.components import (
+    ActionHistory,
     ActorAgency,
     ActorImpulse,
+    CurrentAction,
     FactionRelations,
+    FactionTraits,
+    InitiativeState,
     KernelState,
     LLMActorRegistrationCommand,
     LLMResponse,
@@ -71,7 +75,10 @@ def test_simulated_llm_turn_registers_actor_and_runs_agency() -> None:
                 "scene_id": "dock",
                 "long_term_goals": ["secure food", "earn trust"],
                 "faction_relations": {"dockers": 40, "guards": -10},
+                "faction_traits": ["thief", "profit"],
                 "possible_goals": ["search for exits", "protect allies"],
+                "turns_since_last_impulse": 2,
+                "current_action": "watching cargo manifests",
             },
         ),
     )
@@ -90,7 +97,10 @@ def test_simulated_llm_turn_registers_actor_and_runs_agency() -> None:
             scene_id=str(resolved.payload["scene_id"]),
             long_term_goals=tuple(resolved.payload["long_term_goals"]),
             faction_relations=dict(resolved.payload["faction_relations"]),
+            faction_traits=tuple(resolved.payload["faction_traits"]),
             possible_goals=tuple(resolved.payload["possible_goals"]),
+            turns_since_last_impulse=int(resolved.payload["turns_since_last_impulse"]),
+            current_action=str(resolved.payload["current_action"]),
         ),
     )
 
@@ -110,11 +120,18 @@ def test_simulated_llm_turn_registers_actor_and_runs_agency() -> None:
     agency = world.get_component(actor_id, ActorAgency)
     goals = world.get_component(actor_id, LongTermGoals)
     factions = world.get_component(actor_id, FactionRelations)
+    traits = world.get_component(actor_id, FactionTraits)
+    initiative = world.get_component(actor_id, InitiativeState)
+    history = world.get_component(actor_id, ActionHistory)
 
     assert goals.goals == ("secure food", "earn trust")
     assert factions.standings == {"dockers": 40, "guards": -10}
+    assert traits.traits == ("thief", "profit")
+    assert initiative.turns_since_last_impulse == 0
     assert agency.short_term_goal != ""
     assert agency.impulse != ""
+    assert world.get_component(actor_id, CurrentAction).description == agency.impulse
+    assert history.records
     assert agency_result.payload["processed"][0]["selected_actor_ids"] == [actor_id]
 
     published_registered = world.get_published_events(ActorRegisteredEvent)
@@ -162,7 +179,9 @@ def test_simulated_llm_updates_existing_5e_actor_with_gateway() -> None:
             scene_id="dock",
             long_term_goals=("expand spy network",),
             faction_relations={"guild": 25, "watch": -5},
+            faction_traits=("thief", "profit"),
             suggested_impulse="signals allies from the shadows",
+            current_action="blending into the crowd",
         ),
     )
 
@@ -174,6 +193,10 @@ def test_simulated_llm_updates_existing_5e_actor_with_gateway() -> None:
 
     agency = world.get_component(actor_entity, ActorAgency)
     goals = world.get_component(actor_entity, LongTermGoals)
+    traits = world.get_component(actor_entity, FactionTraits)
+    current_action = world.get_component(actor_entity, CurrentAction)
     assert goals.goals == ("expand spy network",)
+    assert traits.traits == ("thief", "profit")
     assert agency.impulse == "signals allies from the shadows"
     assert agency.last_impulse_turn == 5
+    assert current_action.description == "blending into the crowd"

@@ -31,11 +31,47 @@ class FactionRelations:
 
 
 @dataclass(frozen=True)
+class FactionTraits:
+    traits: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ActorAgency:
     possible_goals: tuple[str, ...] = ()
     short_term_goal: str = ""
     impulse: str = ""
     last_impulse_turn: int = -1
+
+
+@dataclass(frozen=True)
+class InitiativeState:
+    """Tracks how many turns passed since this actor's last impulse."""
+
+    min_turns_between_impulses: int = 1
+    turns_since_last_impulse: int = 9999
+    last_impulse_turn: int = -1
+
+
+@dataclass(frozen=True)
+class CurrentAction:
+    """Most recent known action this actor is currently taking."""
+
+    description: str
+    source: str
+    turn_id: int
+
+
+@dataclass(frozen=True)
+class ActionRecord:
+    turn_id: int
+    action: str
+    source: str
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class ActionHistory:
+    records: tuple[ActionRecord, ...] = ()
 
 
 @dataclass(frozen=True)

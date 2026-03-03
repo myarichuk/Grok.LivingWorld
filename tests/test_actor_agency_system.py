@@ -4,9 +4,12 @@ from ecs.core import EntityQuery, World
 from ttrpg_5e.components import AbilityScores
 from ttrpg_5e.factory import Actor5eFactory, ActorBuild5e
 from ttrpg_engine.components import (
+    ActionHistory,
     ActorAgency,
     ActorComponent,
     ActorImpulse,
+    CurrentAction,
+    InitiativeState,
     KernelState,
     ScenePresence,
     TurnPhase,
@@ -130,3 +133,57 @@ def test_actor_agency_queries_polymorphic_actor_implementations() -> None:
     assert selected == [fake_actor, real_actor]
     assert world.get_component(fake_actor, ActorAgency).impulse != ""
     assert world.get_component(real_actor, ActorAgency).impulse != ""
+
+
+def test_actor_agency_respects_initiative_cooldown_and_tracks_current_action() -> None:
+    world = World()
+    kernel = world.create_entity()
+    world.add_component(
+        kernel,
+        KernelState(
+            phase=TurnPhase.RESOLVING,
+            turn_id=10,
+            current_location="dockside",
+            rng_seed=1337,
+            rng_draws=0,
+        ),
+    )
+
+    ready_actor = world.create_entity()
+    world.add_component(ready_actor, NpcActor("Ready"))
+    world.add_component(ready_actor, ScenePresence("dockside"))
+    world.add_component(ready_actor, ActorAgency(possible_goals=("protect allies",)))
+    world.add_component(
+        ready_actor,
+        InitiativeState(min_turns_between_impulses=2, turns_since_last_impulse=5),
+    )
+
+    cooldown_actor = world.create_entity()
+    world.add_component(cooldown_actor, NpcActor("Cooling Down"))
+    world.add_component(cooldown_actor, ScenePresence("dockside"))
+    world.add_component(
+        cooldown_actor,
+        ActorAgency(possible_goals=("search for exits",)),
+    )
+    world.add_component(
+        cooldown_actor,
+        InitiativeState(
+            min_turns_between_impulses=3,
+            turns_since_last_impulse=1,
+            last_impulse_turn=9,
+        ),
+    )
+
+    result = ActorAgencySystem().run(world, [kernel])
+    selected = result.payload["processed"][0]["selected_actor_ids"]
+
+    assert selected == [ready_actor]
+    assert (
+        world.get_component(ready_actor, InitiativeState).turns_since_last_impulse == 0
+    )
+    assert (
+        world.get_component(cooldown_actor, InitiativeState).turns_since_last_impulse
+        == 1
+    )
+    assert world.get_component(ready_actor, CurrentAction).description != ""
+    assert world.get_component(ready_actor, ActionHistory).records

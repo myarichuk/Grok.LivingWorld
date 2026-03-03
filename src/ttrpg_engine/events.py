@@ -23,3 +23,22 @@ class ActorRegisteredEvent:
     long_term_goals: tuple[str, ...]
     faction_relations: dict[str, int]
     source: str = "llm_gateway"
+
+
+@dataclass(frozen=True)
+class FactionUpdatedEvent:
+    faction_entity_id: int
+    faction_name: str
+    heat: int
+    flags: tuple[str, ...]
+    source: str = "llm_faction_gateway"
+
+
+@dataclass(frozen=True)
+class PlayerActionEvent:
+    player_entity_id: int
+    turn_id: int
+    action: str
+    intent: str
+    target_entity_id: int | None
+    source: str

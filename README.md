@@ -53,6 +53,37 @@ events = world.consume_published_events(ActorImpulseEvent)
 world.unsubscribe(sub_id)
 ```
 
+## NPC agency flow
+
+1. LLM returns actor registration/update payload.
+2. Kernel maps that payload into `LLMActorRegistrationCommand`.
+3. `LLMActorGatewaySystem` writes:
+   - `LongTermGoals`
+   - `FactionRelations`
+   - `FactionTraits`
+   - `InitiativeState` (turn cadence)
+   - `CurrentAction` + `ActionHistory`
+4. `ActorAgencySystem` selects eligible scene actors (2-3, respecting cooldown) and
+   updates `ActorAgency`, `CurrentAction`, `ActionHistory`, and emits `ActorImpulseEvent`.
+
+## Faction flow
+
+1. LLM returns a faction payload mapped to `LLMFactionUpdateCommand`.
+2. `LLMFactionGatewaySystem` writes:
+   - `FactionHeat`
+   - `GrandPlanClock` (progress + LLM-fillable `rate_per_turn`)
+   - `FactionGoals` (`global_goals` + regional goals by region)
+   - `FactionFlags` (gang-level flags/tags)
+3. `FactionTickSystem` advances clocks each turn.
+4. `LLMActorGatewaySystem` inherits `FactionFlags` into actor `FactionTraits` when
+   the actor references a faction (`faction_entity_id`).
+
+## Player agency (LLM integration)
+
+1. LLM returns a player action payload mapped to `LLMPlayerAgencyCommand`.
+2. `LLMPlayerAgencySystem` updates `CurrentAction` + `ActionHistory`.
+3. It publishes `PlayerActionEvent` for kernel/external consumers.
+
 ## Quick start
 
 ```python

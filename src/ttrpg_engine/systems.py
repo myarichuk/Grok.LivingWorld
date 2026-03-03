@@ -7,24 +7,43 @@ from dataclasses import dataclass, replace
 
 from ecs.core import EntityId, EntityQuery, SystemResult, World
 from ttrpg_engine.components import (
+    ActionHistory,
+    ActionRecord,
     ActorAgency,
     ActorComponent,
     ActorImpulse,
+    CurrentAction,
     EndTurnCommand,
+    Faction,
+    FactionFlags,
+    FactionGoals,
+    FactionHeat,
+    FactionMembership,
     FactionRelations,
+    FactionTraits,
+    GrandPlanClock,
+    InitiativeState,
     KernelState,
     LLMActorRegistrationCommand,
+    LLMFactionUpdateCommand,
+    LLMPlayerAgencyCommand,
     LLMResponse,
     LongTermGoals,
     NarrativeActor,
     NeedsLLMFill,
+    PlayerActor,
     RequestRegistry,
     ResolvedLLMResult,
     ScenePresence,
     StartTurnCommand,
     TurnPhase,
 )
-from ttrpg_engine.events import ActorImpulseEvent, ActorRegisteredEvent
+from ttrpg_engine.events import (
+    ActorImpulseEvent,
+    ActorRegisteredEvent,
+    FactionUpdatedEvent,
+    PlayerActionEvent,
+)
 
 
 @dataclass
@@ -39,6 +58,7 @@ class StartTurnSystem:
     )
 
     def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Transition kernels from IDLE into WAITING_FOR_LLM with request envelope."""
         started: list[dict[str, object]] = []
         rejected: list[dict[str, object]] = []
 
@@ -128,6 +148,7 @@ class ApplyLLMResponseSystem:
     )
 
     def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Apply validated LLM responses and advance kernel request state."""
         requests_by_id = {
             world.get_component(entity, NeedsLLMFill).request_id: (
                 entity,
@@ -244,6 +265,7 @@ class CommitTurnSystem:
     query: EntityQuery = EntityQuery(all_of=(KernelState, RequestRegistry))
 
     def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Commit a resolving turn once all pending LLM requests are applied."""
         committed: list[int] = []
 
         for entity in entities:
@@ -282,6 +304,7 @@ class EndTurnSystem:
     query: EntityQuery = EntityQuery(all_of=(KernelState, EndTurnCommand))
 
     def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Move committed kernels back to IDLE once end-turn command is present."""
         ended: list[int] = []
         rejected: list[dict[str, object]] = []
 
@@ -319,6 +342,7 @@ class ActorAgencySystem:
     query: EntityQuery = EntityQuery(all_of=(KernelState,))
 
     def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Select 2-3 eligible actors and record their next impulse/action."""
         processed: list[dict[str, object]] = []
 
         for kernel_entity in entities:
@@ -326,12 +350,25 @@ class ActorAgencySystem:
             actor_entities = world.query(
                 EntityQuery(all_of=(ActorComponent, ActorAgency, ScenePresence))
             )
-            candidates = [
-                actor_entity
-                for actor_entity in actor_entities
-                if world.get_component(actor_entity, ScenePresence).scene_id
-                == state.current_location
-            ]
+            candidates: list[int] = []
+            for actor_entity in actor_entities:
+                if (
+                    world.get_component(actor_entity, ScenePresence).scene_id
+                    != state.current_location
+                ):
+                    continue
+
+                initiative = _get_or_create_initiative_state(world, actor_entity)
+                turns_since = _compute_turns_since_last_impulse(
+                    turn_id=state.turn_id,
+                    initiative=initiative,
+                )
+                world.add_component(
+                    actor_entity,
+                    replace(initiative, turns_since_last_impulse=turns_since),
+                )
+                if turns_since >= initiative.min_turns_between_impulses:
+                    candidates.append(actor_entity)
 
             if not candidates:
                 processed.append(
@@ -366,6 +403,32 @@ class ActorAgencySystem:
                         short_term_goal=goal,
                         impulse=impulse,
                         last_impulse_turn=state.turn_id,
+                    ),
+                )
+                world.add_component(
+                    actor_entity,
+                    CurrentAction(
+                        description=impulse,
+                        source=self.name,
+                        turn_id=state.turn_id,
+                    ),
+                )
+                _append_action_history(
+                    world=world,
+                    actor_entity=actor_entity,
+                    record=ActionRecord(
+                        turn_id=state.turn_id,
+                        action=impulse,
+                        source=self.name,
+                        note=f"goal={goal}",
+                    ),
+                )
+                world.add_component(
+                    actor_entity,
+                    replace(
+                        world.get_component(actor_entity, InitiativeState),
+                        last_impulse_turn=state.turn_id,
+                        turns_since_last_impulse=0,
                     ),
                 )
 
@@ -419,6 +482,7 @@ class LLMActorGatewaySystem:
     query: EntityQuery = EntityQuery(all_of=(LLMActorRegistrationCommand,))
 
     def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Register/update actor agency state from LLM payload on response turns."""
         kernels = world.query(EntityQuery(all_of=(KernelState,)))
         current_turn = (
             world.get_component(kernels[0], KernelState).turn_id if kernels else -1
@@ -437,6 +501,11 @@ class LLMActorGatewaySystem:
                 )
 
             sanitized_relations = _sanitize_faction_relations(command.faction_relations)
+            inherited_flags = _get_faction_flags(world, command.faction_entity_id)
+            normalized_traits = _merge_traits(
+                command.faction_traits,
+                inherited_flags,
+            )
             world.add_component(actor_entity, ScenePresence(scene_id=command.scene_id))
             world.add_component(
                 actor_entity,
@@ -446,6 +515,15 @@ class LLMActorGatewaySystem:
                 actor_entity,
                 FactionRelations(standings=sanitized_relations),
             )
+            world.add_component(
+                actor_entity,
+                FactionTraits(traits=normalized_traits),
+            )
+            if command.faction_entity_id is not None:
+                world.add_component(
+                    actor_entity,
+                    FactionMembership(faction_entity_id=command.faction_entity_id),
+                )
 
             short_term_goal = _derive_short_term_goal(
                 command.long_term_goals, command.possible_goals
@@ -465,6 +543,44 @@ class LLMActorGatewaySystem:
                     short_term_goal=short_term_goal,
                     impulse=impulse,
                     last_impulse_turn=current_turn,
+                ),
+            )
+            inferred_turns_since = (
+                max(0, command.turns_since_last_impulse)
+                if command.turns_since_last_impulse is not None
+                else _compute_default_turns_since(current_turn)
+            )
+            world.add_component(
+                actor_entity,
+                InitiativeState(
+                    min_turns_between_impulses=max(
+                        1, command.min_turns_between_impulses
+                    ),
+                    turns_since_last_impulse=inferred_turns_since,
+                    last_impulse_turn=(
+                        current_turn - inferred_turns_since
+                        if current_turn >= 0
+                        else -1
+                    ),
+                ),
+            )
+            current_action = command.current_action or impulse
+            world.add_component(
+                actor_entity,
+                CurrentAction(
+                    description=current_action,
+                    source=self.name,
+                    turn_id=current_turn,
+                ),
+            )
+            _append_action_history(
+                world=world,
+                actor_entity=actor_entity,
+                record=ActionRecord(
+                    turn_id=current_turn,
+                    action=current_action,
+                    source=self.name,
+                    note="llm_registration",
                 ),
             )
 
@@ -495,6 +611,8 @@ class LLMActorGatewaySystem:
                     "actor_entity": actor_entity,
                     "short_term_goal": short_term_goal,
                     "impulse": impulse,
+                    "faction_traits": normalized_traits,
+                    "current_action": current_action,
                 }
             )
 
@@ -503,6 +621,156 @@ class LLMActorGatewaySystem:
             len(entities),
             {"registered": registered},
         )
+
+
+@dataclass
+class LLMFactionGatewaySystem:
+    """Register/update factions from LLM payload including heat/goals/clocks/flags."""
+
+    name: str = "llm_faction_gateway"
+    query: EntityQuery = EntityQuery(all_of=(LLMFactionUpdateCommand,))
+
+    def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Apply LLM faction payloads to faction state components."""
+        updated: list[dict[str, object]] = []
+        for command_entity in entities:
+            command = world.get_component(command_entity, LLMFactionUpdateCommand)
+            faction_entity = command.faction_entity_id
+            if faction_entity is None:
+                faction_entity = world.create_entity()
+
+            world.add_component(faction_entity, Faction(name=command.faction_name))
+            world.add_component(
+                faction_entity,
+                FactionHeat(value=max(0, min(100, int(command.heat)))),
+            )
+            normalized_flags = _normalize_faction_traits(command.flags)
+            world.add_component(faction_entity, FactionFlags(flags=normalized_flags))
+            world.add_component(
+                faction_entity,
+                FactionGoals(
+                    global_goals=command.global_goals,
+                    regional_goals=dict(command.regional_goals),
+                ),
+            )
+            world.add_component(
+                faction_entity,
+                GrandPlanClock(
+                    name=command.grand_plan_name,
+                    progress=max(0.0, float(command.grand_plan_progress)),
+                    max_progress=max(1.0, float(command.grand_plan_max_progress)),
+                    rate_per_turn=max(0.0, float(command.grand_plan_rate_per_turn)),
+                ),
+            )
+            world.publish(
+                FactionUpdatedEvent(
+                    faction_entity_id=faction_entity,
+                    faction_name=command.faction_name,
+                    heat=max(0, min(100, int(command.heat))),
+                    flags=normalized_flags,
+                )
+            )
+            world.remove_component(command_entity, LLMFactionUpdateCommand)
+            updated.append(
+                {
+                    "command_entity": command_entity,
+                    "faction_entity": faction_entity,
+                    "flags": normalized_flags,
+                }
+            )
+
+        return SystemResult(self.name, len(entities), {"updated": updated})
+
+
+@dataclass
+class FactionTickSystem:
+    """Advance faction grand-plan clocks using each faction's configured rate."""
+
+    name: str = "faction_tick"
+    query: EntityQuery = EntityQuery(all_of=(Faction, GrandPlanClock))
+
+    def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Advance each faction clock by its configured per-turn rate."""
+        advanced: list[dict[str, object]] = []
+        for faction_entity in entities:
+            clock = world.get_component(faction_entity, GrandPlanClock)
+            next_progress = min(
+                clock.max_progress,
+                clock.progress + clock.rate_per_turn,
+            )
+            world.add_component(
+                faction_entity,
+                replace(clock, progress=next_progress),
+            )
+            advanced.append(
+                {
+                    "faction_entity": faction_entity,
+                    "progress": next_progress,
+                    "max_progress": clock.max_progress,
+                }
+            )
+        return SystemResult(self.name, len(entities), {"advanced": advanced})
+
+
+@dataclass
+class LLMPlayerAgencySystem:
+    """Apply LLM-evaluated player agency actions and track action history."""
+
+    name: str = "llm_player_agency"
+    query: EntityQuery = EntityQuery(all_of=(LLMPlayerAgencyCommand,))
+
+    def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Store LLM-selected player actions and publish action events."""
+        kernels = world.query(EntityQuery(all_of=(KernelState,)))
+        current_turn = (
+            world.get_component(kernels[0], KernelState).turn_id if kernels else -1
+        )
+
+        applied: list[dict[str, object]] = []
+        for command_entity in entities:
+            command = world.get_component(command_entity, LLMPlayerAgencyCommand)
+            if not world.has_component(command.player_entity_id, PlayerActor):
+                world.remove_component(command_entity, LLMPlayerAgencyCommand)
+                continue
+
+            world.add_component(
+                command.player_entity_id,
+                CurrentAction(
+                    description=command.action,
+                    source=self.name,
+                    turn_id=current_turn,
+                ),
+            )
+            _append_action_history(
+                world=world,
+                actor_entity=command.player_entity_id,
+                record=ActionRecord(
+                    turn_id=current_turn,
+                    action=command.action,
+                    source=self.name,
+                    note=command.intent,
+                ),
+            )
+            world.publish(
+                PlayerActionEvent(
+                    player_entity_id=command.player_entity_id,
+                    turn_id=current_turn,
+                    action=command.action,
+                    intent=command.intent,
+                    target_entity_id=command.target_entity_id,
+                    source=self.name,
+                )
+            )
+            world.remove_component(command_entity, LLMPlayerAgencyCommand)
+            applied.append(
+                {
+                    "command_entity": command_entity,
+                    "player_entity_id": command.player_entity_id,
+                    "action": command.action,
+                }
+            )
+
+        return SystemResult(self.name, len(entities), {"applied": applied})
 
 
 def _next_request_id(turn_id: int, request_type: str, existing_ids: set[str]) -> str:
@@ -583,3 +851,63 @@ def _derive_impulse_from_context(goal: str, faction_relations: dict[str, int]) -
     if allied_factions:
         return f"pursues '{goal}' and coordinates with {allied_factions[0]}"
     return f"pursues '{goal}' cautiously"
+
+
+def _normalize_faction_traits(traits: tuple[str, ...]) -> tuple[str, ...]:
+    """Normalize and deduplicate trait labels while preserving order."""
+    normalized: list[str] = []
+    for trait in traits:
+        cleaned = trait.strip().lower()
+        if cleaned and cleaned not in normalized:
+            normalized.append(cleaned)
+    return tuple(normalized)
+
+
+def _merge_traits(
+    actor_traits: tuple[str, ...], inherited_traits: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Merge direct and inherited traits with normalization + deduplication."""
+    return _normalize_faction_traits(actor_traits + inherited_traits)
+
+
+def _get_faction_flags(world: World, faction_entity_id: int | None) -> tuple[str, ...]:
+    """Return faction flags when the actor points at an existing faction entity."""
+    if faction_entity_id is None:
+        return ()
+    if not world.has_component(faction_entity_id, FactionFlags):
+        return ()
+    return world.get_component(faction_entity_id, FactionFlags).flags
+
+
+def _append_action_history(
+    world: World, actor_entity: int, record: ActionRecord
+) -> None:
+    """Append a record to actor history, creating it when absent."""
+    if world.has_component(actor_entity, ActionHistory):
+        history = world.get_component(actor_entity, ActionHistory)
+        world.add_component(actor_entity, ActionHistory(history.records + (record,)))
+        return
+    world.add_component(actor_entity, ActionHistory(records=(record,)))
+
+
+def _get_or_create_initiative_state(world: World, actor_entity: int) -> InitiativeState:
+    """Return initiative state and initialize defaults for actors that lack it."""
+    if world.has_component(actor_entity, InitiativeState):
+        return world.get_component(actor_entity, InitiativeState)
+    default_state = InitiativeState()
+    world.add_component(actor_entity, default_state)
+    return default_state
+
+
+def _compute_turns_since_last_impulse(turn_id: int, initiative: InitiativeState) -> int:
+    """Compute elapsed turns from initiative state with sane defaults."""
+    if initiative.last_impulse_turn < 0:
+        return max(initiative.turns_since_last_impulse, turn_id + 1)
+    return max(0, turn_id - initiative.last_impulse_turn)
+
+
+def _compute_default_turns_since(current_turn: int) -> int:
+    """Default elapsed turns for newly registered actors."""
+    if current_turn < 0:
+        return 9999
+    return current_turn + 1
