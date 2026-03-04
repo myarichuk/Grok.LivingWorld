@@ -53,6 +53,8 @@ class LLMActorRegistrationCommand:
     scene_id: str
     long_term_goals: tuple[str, ...]
     faction_relations: dict[str, int]
+    scene_zone: str = "default"
+    scene_distance_bucket: str = "near"
     faction_entity_id: int | None = None
     faction_traits: tuple[str, ...] = ()
     possible_goals: tuple[str, ...] = ()

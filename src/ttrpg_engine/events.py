@@ -13,6 +13,8 @@ class ActorImpulseEvent:
     turn_id: int
     impulse: str
     source: str
+    zone: str = "default"
+    distance_bucket: str = "near"
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,8 @@ class ActorRegisteredEvent:
     scene_id: str
     long_term_goals: tuple[str, ...]
     faction_relations: dict[str, int]
+    scene_zone: str = "default"
+    scene_distance_bucket: str = "near"
     source: str = "llm_gateway"
 
 

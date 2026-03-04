@@ -20,6 +20,7 @@ from ttrpg_engine.components import (
     NeedsLLMFill,
     RequestRegistry,
     ResolvedLLMResult,
+    ScenePosition,
     ScenePresence,
     StartTurnCommand,
     TurnPhase,
@@ -123,6 +124,7 @@ def test_simulated_llm_turn_registers_actor_and_runs_agency() -> None:
     traits = world.get_component(actor_id, FactionTraits)
     initiative = world.get_component(actor_id, InitiativeState)
     history = world.get_component(actor_id, ActionHistory)
+    scene_position = world.get_component(actor_id, ScenePosition)
 
     assert goals.goals == ("secure food", "earn trust")
     assert factions.standings == {"dockers": 40, "guards": -10}
@@ -132,6 +134,8 @@ def test_simulated_llm_turn_registers_actor_and_runs_agency() -> None:
     assert agency.impulse != ""
     assert world.get_component(actor_id, CurrentAction).description == agency.impulse
     assert history.records
+    assert scene_position.zone == "default"
+    assert scene_position.distance_bucket.value == "near"
     assert agency_result.payload["processed"][0]["selected_actor_ids"] == [actor_id]
 
     published_registered = world.get_published_events(ActorRegisteredEvent)
@@ -177,6 +181,8 @@ def test_simulated_llm_updates_existing_5e_actor_with_gateway() -> None:
             actor_name="Aria",
             actor_entity_id=actor_entity,
             scene_id="dock",
+            scene_zone="rooftop",
+            scene_distance_bucket="far",
             long_term_goals=("expand spy network",),
             faction_relations={"guild": 25, "watch": -5},
             faction_traits=("thief", "profit"),
@@ -195,8 +201,11 @@ def test_simulated_llm_updates_existing_5e_actor_with_gateway() -> None:
     goals = world.get_component(actor_entity, LongTermGoals)
     traits = world.get_component(actor_entity, FactionTraits)
     current_action = world.get_component(actor_entity, CurrentAction)
+    scene_position = world.get_component(actor_entity, ScenePosition)
     assert goals.goals == ("expand spy network",)
     assert traits.traits == ("thief", "profit")
     assert agency.impulse == "signals allies from the shadows"
     assert agency.last_impulse_turn == 5
     assert current_action.description == "blending into the crowd"
+    assert scene_position.zone == "rooftop"
+    assert scene_position.distance_bucket.value == "far"

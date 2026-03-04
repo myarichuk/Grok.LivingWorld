@@ -14,6 +14,7 @@ from ttrpg_engine.components import (
     LLMActorRegistrationCommand,
     LongTermGoals,
     NarrativeActor,
+    ScenePosition,
     TurnPhase,
 )
 from ttrpg_engine.events import ActorImpulseEvent, ActorRegisteredEvent
@@ -39,6 +40,8 @@ def test_llm_actor_gateway_registers_actor_and_publishes_events() -> None:
         LLMActorRegistrationCommand(
             actor_name="Kestrel",
             scene_id="dock",
+            scene_zone="pier_a",
+            scene_distance_bucket="close",
             long_term_goals=("secure smuggling route", "build local network"),
             faction_relations={"city_watch": -25, "dock_union": 150},
             faction_entity_id=faction_entity,
@@ -64,6 +67,7 @@ def test_llm_actor_gateway_registers_actor_and_publishes_events() -> None:
     agency = world.get_component(registered_actor, ActorAgency)
     current_action = world.get_component(registered_actor, CurrentAction)
     initiative = world.get_component(registered_actor, InitiativeState)
+    scene_position = world.get_component(registered_actor, ScenePosition)
     history = world.get_component(registered_actor, ActionHistory)
 
     assert actor.name == "Kestrel"
@@ -86,11 +90,15 @@ def test_llm_actor_gateway_registers_actor_and_publishes_events() -> None:
     assert initiative.turns_since_last_impulse == 3
     assert initiative.min_turns_between_impulses == 2
     assert history.records[-1].action == "negotiating over contraband"
+    assert scene_position.zone == "pier_a"
+    assert scene_position.distance_bucket.value == "close"
 
     assert len(registered_events) == 1
     assert registered_events[0].actor_entity_id == registered_actor
     assert len(impulse_events) == 1
     assert impulse_events[0].actor_entity_id == registered_actor
+    assert impulse_events[0].zone == "pier_a"
+    assert impulse_events[0].distance_bucket == "close"
 
 
 def test_world_pubsub_allows_external_api_actor_impulse_event() -> None:

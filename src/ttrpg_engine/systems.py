@@ -13,6 +13,7 @@ from ttrpg_engine.components import (
     ActorComponent,
     ActorImpulse,
     CurrentAction,
+    DistanceBucket,
     EndTurnCommand,
     Faction,
     FactionFlags,
@@ -34,6 +35,7 @@ from ttrpg_engine.components import (
     PlayerActor,
     RequestRegistry,
     ResolvedLLMResult,
+    ScenePosition,
     ScenePresence,
     StartTurnCommand,
     TurnPhase,
@@ -44,6 +46,14 @@ from ttrpg_engine.events import (
     FactionUpdatedEvent,
     PlayerActionEvent,
 )
+
+_DISTANCE_PRIORITY: dict[DistanceBucket, int] = {
+    DistanceBucket.ENGAGED: 0,
+    DistanceBucket.CLOSE: 1,
+    DistanceBucket.NEAR: 2,
+    DistanceBucket.FAR: 3,
+    DistanceBucket.DISTANT: 4,
+}
 
 
 @dataclass
@@ -350,12 +360,10 @@ class ActorAgencySystem:
             actor_entities = world.query(
                 EntityQuery(all_of=(ActorComponent, ActorAgency, ScenePresence))
             )
-            candidates: list[int] = []
+            candidates: list[tuple[int, int]] = []
             for actor_entity in actor_entities:
-                if (
-                    world.get_component(actor_entity, ScenePresence).scene_id
-                    != state.current_location
-                ):
+                scene_position = _get_or_create_scene_position(world, actor_entity)
+                if scene_position.scene_id != state.current_location:
                     continue
 
                 initiative = _get_or_create_initiative_state(world, actor_entity)
@@ -368,7 +376,8 @@ class ActorAgencySystem:
                     replace(initiative, turns_since_last_impulse=turns_since),
                 )
                 if turns_since >= initiative.min_turns_between_impulses:
-                    candidates.append(actor_entity)
+                    priority = _DISTANCE_PRIORITY[scene_position.distance_bucket]
+                    candidates.append((priority, actor_entity))
 
             if not candidates:
                 processed.append(
@@ -388,7 +397,12 @@ class ActorAgencySystem:
                 selection_count = 1
 
             rng = random.Random(state.rng_seed + state.turn_id + state.rng_draws)
-            selected = sorted(rng.sample(candidates, selection_count))
+            rng.shuffle(candidates)
+            ranked = sorted(candidates, key=lambda item: item[0])
+            selected = sorted(
+                actor_entity
+                for _, actor_entity in ranked[:selection_count]
+            )
 
             impulse_entity_ids: list[int] = []
             for actor_entity in selected:
@@ -433,6 +447,7 @@ class ActorAgencySystem:
                 )
 
                 impulse_entity = world.create_entity()
+                position = world.get_component(actor_entity, ScenePosition)
                 world.add_component(
                     impulse_entity,
                     ActorImpulse(
@@ -441,18 +456,22 @@ class ActorAgencySystem:
                         scene_id=state.current_location,
                         goal=goal,
                         impulse=impulse,
+                        zone=position.zone,
+                        distance_bucket=position.distance_bucket,
                     ),
                 )
                 world.publish(
-                    ActorImpulseEvent(
-                        actor_entity_id=actor_entity,
-                        target_entity_id=None,
-                        scene_id=state.current_location,
-                        turn_id=state.turn_id,
-                        impulse=impulse,
-                        source=self.name,
+                        ActorImpulseEvent(
+                            actor_entity_id=actor_entity,
+                            target_entity_id=None,
+                            scene_id=state.current_location,
+                            turn_id=state.turn_id,
+                            impulse=impulse,
+                            source=self.name,
+                            zone=position.zone,
+                            distance_bucket=position.distance_bucket.value,
+                        )
                     )
-                )
                 impulse_entity_ids.append(impulse_entity)
 
             world.add_component(
@@ -507,6 +526,16 @@ class LLMActorGatewaySystem:
                 inherited_flags,
             )
             world.add_component(actor_entity, ScenePresence(scene_id=command.scene_id))
+            scene_zone = command.scene_zone.strip() or "default"
+            distance_bucket = _parse_distance_bucket(command.scene_distance_bucket)
+            world.add_component(
+                actor_entity,
+                ScenePosition(
+                    scene_id=command.scene_id,
+                    zone=scene_zone,
+                    distance_bucket=distance_bucket,
+                ),
+            )
             world.add_component(
                 actor_entity,
                 LongTermGoals(goals=command.long_term_goals),
@@ -591,6 +620,8 @@ class LLMActorGatewaySystem:
                     scene_id=command.scene_id,
                     long_term_goals=command.long_term_goals,
                     faction_relations=sanitized_relations,
+                    scene_zone=scene_zone,
+                    scene_distance_bucket=distance_bucket.value,
                 )
             )
             world.publish(
@@ -601,6 +632,8 @@ class LLMActorGatewaySystem:
                     turn_id=current_turn,
                     impulse=impulse,
                     source=self.name,
+                    zone=scene_zone,
+                    distance_bucket=distance_bucket.value,
                 )
             )
             world.remove_component(command_entity, LLMActorRegistrationCommand)
@@ -613,6 +646,8 @@ class LLMActorGatewaySystem:
                     "impulse": impulse,
                     "faction_traits": normalized_traits,
                     "current_action": current_action,
+                    "scene_zone": scene_zone,
+                    "scene_distance_bucket": distance_bucket.value,
                 }
             )
 
@@ -888,6 +923,31 @@ def _append_action_history(
         world.add_component(actor_entity, ActionHistory(history.records + (record,)))
         return
     world.add_component(actor_entity, ActionHistory(records=(record,)))
+
+
+def _parse_distance_bucket(value: str) -> DistanceBucket:
+    """Parse a string into a known distance bucket; default to ``NEAR``."""
+    normalized = value.strip().lower()
+    for bucket in DistanceBucket:
+        if bucket.value == normalized:
+            return bucket
+    return DistanceBucket.NEAR
+
+
+def _get_or_create_scene_position(world: World, actor_entity: int) -> ScenePosition:
+    """Ensure actor has ScenePosition and keep scene_id synced with ScenePresence."""
+    presence = world.get_component(actor_entity, ScenePresence)
+    if world.has_component(actor_entity, ScenePosition):
+        position = world.get_component(actor_entity, ScenePosition)
+        if position.scene_id == presence.scene_id:
+            return position
+        updated = replace(position, scene_id=presence.scene_id)
+        world.add_component(actor_entity, updated)
+        return updated
+
+    position = ScenePosition(scene_id=presence.scene_id)
+    world.add_component(actor_entity, position)
+    return position
 
 
 def _get_or_create_initiative_state(world: World, actor_entity: int) -> InitiativeState:

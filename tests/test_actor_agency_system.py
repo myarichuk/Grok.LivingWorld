@@ -9,8 +9,10 @@ from ttrpg_engine.components import (
     ActorComponent,
     ActorImpulse,
     CurrentAction,
+    DistanceBucket,
     InitiativeState,
     KernelState,
+    ScenePosition,
     ScenePresence,
     TurnPhase,
 )
@@ -76,6 +78,10 @@ def test_actor_agency_selects_two_or_three_actors_and_emits_impulses() -> None:
         assert agency.short_term_goal != ""
         assert agency.impulse != ""
         assert agency.last_impulse_turn == 7
+        assert (
+            world.get_component(actor_id, ScenePosition).scene_id
+            == "the-salty-wench"
+        )
 
     updated_kernel = world.get_component(kernel, KernelState)
     assert updated_kernel.rng_draws == len(selected_ids)
@@ -187,3 +193,61 @@ def test_actor_agency_respects_initiative_cooldown_and_tracks_current_action() -
     )
     assert world.get_component(ready_actor, CurrentAction).description != ""
     assert world.get_component(ready_actor, ActionHistory).records
+
+
+def test_actor_agency_prioritizes_closer_distance_buckets() -> None:
+    world = World()
+    kernel = world.create_entity()
+    world.add_component(
+        kernel,
+        KernelState(
+            phase=TurnPhase.RESOLVING,
+            turn_id=0,
+            current_location="market",
+            rng_seed=1337,
+            rng_draws=0,
+        ),
+    )
+
+    engaged = world.create_entity()
+    world.add_component(engaged, NpcActor("Engaged"))
+    world.add_component(engaged, ScenePresence("market"))
+    world.add_component(
+        engaged,
+        ScenePosition(
+            scene_id="market",
+            zone="square",
+            distance_bucket=DistanceBucket.ENGAGED,
+        ),
+    )
+    world.add_component(engaged, ActorAgency(possible_goals=("protect allies",)))
+
+    close = world.create_entity()
+    world.add_component(close, NpcActor("Close"))
+    world.add_component(close, ScenePresence("market"))
+    world.add_component(
+        close,
+        ScenePosition(
+            scene_id="market",
+            zone="square",
+            distance_bucket=DistanceBucket.CLOSE,
+        ),
+    )
+    world.add_component(close, ActorAgency(possible_goals=("search for exits",)))
+
+    distant = world.create_entity()
+    world.add_component(distant, NpcActor("Distant"))
+    world.add_component(distant, ScenePresence("market"))
+    world.add_component(
+        distant,
+        ScenePosition(
+            scene_id="market",
+            zone="balcony",
+            distance_bucket=DistanceBucket.DISTANT,
+        ),
+    )
+    world.add_component(distant, ActorAgency(possible_goals=("flee danger",)))
+
+    result = ActorAgencySystem().run(world, [kernel])
+    selected = result.payload["processed"][0]["selected_actor_ids"]
+    assert selected == sorted([engaged, close])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 
 class ActorComponent:
@@ -18,6 +19,25 @@ class NarrativeActor(ActorComponent):
 @dataclass(frozen=True)
 class ScenePresence:
     scene_id: str
+
+
+class DistanceBucket(str, Enum):
+    """Coarse tactical distance from a scene-local reference point."""
+
+    ENGAGED = "engaged"
+    CLOSE = "close"
+    NEAR = "near"
+    FAR = "far"
+    DISTANT = "distant"
+
+
+@dataclass(frozen=True)
+class ScenePosition:
+    """Actor position within a scene by zone and relative distance bucket."""
+
+    scene_id: str
+    zone: str = "default"
+    distance_bucket: DistanceBucket = DistanceBucket.NEAR
 
 
 @dataclass(frozen=True)
@@ -81,3 +101,5 @@ class ActorImpulse:
     scene_id: str
     goal: str
     impulse: str
+    zone: str = "default"
+    distance_bucket: DistanceBucket = DistanceBucket.NEAR
