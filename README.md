@@ -53,6 +53,58 @@ events = world.consume_published_events(ActorImpulseEvent)
 world.unsubscribe(sub_id)
 ```
 
+## WorldDB storage
+
+`World` now uses `WorldDB` as its default persistence backend.
+
+- Component add/remove is journaled to storage.
+- Published events are journaled to storage.
+- On startup, `World` rehydrates persisted components/events from storage.
+- If storage is unavailable, `World` warns and falls back to in-memory mode.
+
+### World storage modes
+
+```python
+from ecs import World
+
+# default storage path (temp file) + rehydration
+world = World()
+
+# explicit storage path
+world = World(storage_path="state/world.ecs.db")
+
+# disable storage
+world = World(enable_storage=False)
+```
+
+### Test with mock storage backend
+
+```python
+class MockStorage:
+    def append_only(self, doc): ...
+    def iter_docs(self, include_tombstones=False): return []
+    def close(self): ...
+
+world = World(storage_backend=MockStorage())
+```
+
+### WorldDB query APIs
+
+`WorldDB` supports:
+
+- key fetch: `get(key)` and `get_from_mmap(key)`
+- term query (AND/OR): `query(must=[...], should=[...])`
+- range query: `query_turn_range(turn_min, turn_max, scene_id=None)`
+- batch writes: `append_batch([...])`
+- soft delete: `delete(key)`
+- compaction: `compact()`
+- checkpoint import/export: `import_checkpoint(...)` / `export_checkpoint()`
+
+Compression behavior:
+
+- Large `payload` fields are compressed.
+- Large full docs can be compressed as a whole record.
+
 ## NPC agency flow
 
 1. LLM returns actor registration/update payload.
