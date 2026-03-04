@@ -34,6 +34,7 @@ find src -type f -name '*.py' | sort
 - `src/ttrpg_engine/components/player.py`
 - `src/ttrpg_engine/events.py`
 - `src/ttrpg_engine/systems.py`
+- `src/ttrpg_engine/world_db.py`
 
 ## Unified Runtime Only
 

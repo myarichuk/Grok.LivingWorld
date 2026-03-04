@@ -58,6 +58,7 @@ from ttrpg_engine.systems import (
     LocationRegistrationSystem,
     StartTurnSystem,
 )
+from ttrpg_engine.world_db import WorldDB
 
 __all__ = [
     "ActorAgency",
@@ -112,4 +113,5 @@ __all__ = [
     "StartTurnCommand",
     "StartTurnSystem",
     "TurnPhase",
+    "WorldDB",
 ]

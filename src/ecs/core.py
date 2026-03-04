@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import importlib
+import os
+import tempfile
+import uuid
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from enum import Enum
 from typing import Any, Protocol
 
 EntityId = int
@@ -91,6 +96,9 @@ class QueryBuilder:
 class World:
     """In-memory ECS world storing entities and components by type."""
 
+    enable_storage: bool = True
+    storage_path: str | None = None
+    storage_backend: Any | None = None
     _next_entity_id: int = 1
     _components: dict[type[Any], dict[EntityId, Any]] = field(default_factory=dict)
     _version: int = 0
@@ -99,6 +107,35 @@ class World:
         default_factory=dict
     )
     _event_queue: list[Any] = field(default_factory=list)
+    _storage: Any | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.enable_storage:
+            return
+
+        if self.storage_backend is not None:
+            self._storage = self.storage_backend
+            self._load_from_storage()
+            return
+
+        try:
+            from ttrpg_engine.world_db import WorldDB
+
+            path = self.storage_path or os.path.join(
+                tempfile.gettempdir(), f"ecs-world-{uuid.uuid4().hex}.db"
+            )
+            self.storage_path = path
+            self._storage = WorldDB(path)
+            self._load_from_storage()
+        except Exception:
+            self._storage = None
+
+    def close(self) -> None:
+        """Close backing storage resources."""
+        if self._storage is None:
+            return
+        self._storage.close()
+        self._storage = None
 
     def create_entity(self) -> EntityId:
         entity_id = self._next_entity_id
@@ -110,6 +147,7 @@ class World:
         if component_type not in self._components:
             self._components[component_type] = {}
         self._components[component_type][entity_id] = component
+        self._persist_component(entity_id, component)
         self._version += 1
 
     def get_component(self, entity_id: EntityId, component_type: type[Any]) -> Any:
@@ -161,6 +199,7 @@ class World:
         del entity_components[entity_id]
         if not entity_components:
             del self._components[component_type]
+        self._persist_component_delete(entity_id, component_type)
         self._version += 1
         return True
 
@@ -169,6 +208,7 @@ class World:
         for component_type, entity_components in list(self._components.items()):
             if entity_components.pop(entity_id, None) is not None:
                 removed_any = True
+                self._persist_component_delete(entity_id, component_type)
             if not entity_components:
                 del self._components[component_type]
         if removed_any:
@@ -233,6 +273,7 @@ class World:
     def publish(self, event: Any) -> None:
         """Publish an event to subscribers and store it in the in-memory queue."""
         self._event_queue.append(event)
+        self._persist_event(event)
         for subscribed_type, handler in self._subscriptions.values():
             if isinstance(event, subscribed_type):
                 handler(event)
@@ -278,6 +319,195 @@ class World:
             if stored_type is component_type or issubclass(stored_type, component_type):
                 entity_ids.update(entity_components.keys())
         return entity_ids
+
+    def _persist_component(self, entity_id: EntityId, component: Any) -> None:
+        if self._storage is None:
+            return
+        component_type = type(component)
+        component_type_name = _type_name(component_type)
+        storage_key = _component_storage_key(entity_id, component_type_name)
+        self._storage.append_only(
+            {
+                "id": storage_key,
+                "kind": "ecs_component",
+                "entity_id": entity_id,
+                "component_type": component_type_name,
+                "payload": _encode_value(component),
+                "turn": self._version,
+            }
+        )
+
+    def _persist_component_delete(
+        self, entity_id: EntityId, component_type: type[Any]
+    ) -> None:
+        if self._storage is None:
+            return
+        component_type_name = _type_name(component_type)
+        storage_key = _component_storage_key(entity_id, component_type_name)
+        self._storage.append_only(
+            {
+                "id": storage_key,
+                "kind": "ecs_component",
+                "entity_id": entity_id,
+                "component_type": component_type_name,
+                "tombstone": True,
+                "turn": self._version,
+            }
+        )
+
+    def _persist_event(self, event: Any) -> None:
+        if self._storage is None:
+            return
+        self._storage.append_only(
+            {
+                "kind": "ecs_event",
+                "event_type": _type_name(type(event)),
+                "payload": _encode_value(event),
+                "turn": self._version,
+            }
+        )
+
+    def _load_from_storage(self) -> None:
+        if self._storage is None:
+            return
+        if not hasattr(self._storage, "iter_docs"):
+            return
+
+        try:
+            docs = self._storage.iter_docs(include_tombstones=True)
+        except Exception:
+            return
+
+        max_entity_id = 0
+        max_turn = self._version
+
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+
+            turn = doc.get("turn", 0)
+            if isinstance(turn, int):
+                max_turn = max(max_turn, turn)
+
+            if doc.get("kind") == "ecs_event":
+                payload = _decode_value(doc.get("payload"))
+                self._event_queue.append(payload)
+                continue
+
+            if doc.get("kind") != "ecs_component":
+                continue
+
+            entity_value = doc.get("entity_id")
+            if not isinstance(entity_value, int):
+                continue
+            max_entity_id = max(max_entity_id, entity_value)
+
+            component_type_path = doc.get("component_type")
+            if not isinstance(component_type_path, str):
+                continue
+            component_type = _load_type(component_type_path)
+            if not isinstance(component_type, type):
+                continue
+
+            payload = _decode_value(doc.get("payload"))
+            tombstone = bool(doc.get("tombstone"))
+            if tombstone:
+                entity_components = self._components.get(component_type)
+                if entity_components is not None:
+                    entity_components.pop(entity_value, None)
+                    if not entity_components:
+                        del self._components[component_type]
+                continue
+
+            if component_type not in self._components:
+                self._components[component_type] = {}
+            self._components[component_type][entity_value] = payload
+
+        self._next_entity_id = max(self._next_entity_id, max_entity_id + 1)
+        self._version = max(self._version, max_turn)
+
+
+def _component_storage_key(entity_id: EntityId, component_type_name: str) -> str:
+    return f"ecs:component:{entity_id}:{component_type_name}"
+
+
+def _type_name(tp: type[Any]) -> str:
+    return f"{tp.__module__}.{tp.__qualname__}"
+
+
+def _encode_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Enum):
+        return {
+            "__enum__": _type_name(type(value)),
+            "value": _encode_value(value.value),
+        }
+    if is_dataclass(value):
+        return {
+            "__dataclass__": _type_name(type(value)),
+            "fields": {
+                field_info.name: _encode_value(getattr(value, field_info.name))
+                for field_info in fields(value)
+            },
+        }
+    if isinstance(value, dict):
+        return {str(key): _encode_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_encode_value(item) for item in value]
+    if isinstance(value, tuple):
+        return {
+            "__tuple__": [_encode_value(item) for item in value],
+        }
+    return {"__repr__": repr(value)}
+
+
+def _decode_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_decode_value(item) for item in value]
+    if isinstance(value, dict):
+        if "__tuple__" in value:
+            raw = value["__tuple__"]
+            if isinstance(raw, list):
+                return tuple(_decode_value(item) for item in raw)
+            return ()
+        if "__enum__" in value and "value" in value:
+            enum_type = _load_type(str(value["__enum__"]))
+            if isinstance(enum_type, type) and issubclass(enum_type, Enum):
+                return enum_type(_decode_value(value["value"]))
+            return _decode_value(value["value"])
+        if "__dataclass__" in value and "fields" in value:
+            dataclass_type = _load_type(str(value["__dataclass__"]))
+            raw_fields = value["fields"]
+            if (
+                isinstance(dataclass_type, type)
+                and is_dataclass(dataclass_type)
+                and isinstance(raw_fields, dict)
+            ):
+                return dataclass_type(
+                    **{key: _decode_value(item) for key, item in raw_fields.items()}
+                )
+            if not isinstance(raw_fields, dict):
+                return {}
+            return {key: _decode_value(item) for key, item in raw_fields.items()}
+        if "__repr__" in value:
+            return value["__repr__"]
+        return {str(key): _decode_value(item) for key, item in value.items()}
+    return value
+
+
+def _load_type(path: str) -> type[Any] | None:
+    module_name, _, type_name = path.rpartition(".")
+    if not module_name or not type_name:
+        return None
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError:
+        return None
+    candidate = getattr(module, type_name, None)
+    if isinstance(candidate, type):
+        return candidate
+    return None
 
 
 class System(Protocol):
