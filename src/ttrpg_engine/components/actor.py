@@ -103,3 +103,15 @@ class ActorImpulse:
     impulse: str
     zone: str = "default"
     distance_bucket: DistanceBucket = DistanceBucket.NEAR
+
+
+@dataclass(frozen=True)
+class EnvironmentImpulse:
+    """Background impulse for distant actors in the same scene."""
+
+    actor_entity_id: int
+    turn_id: int
+    scene_id: str
+    zone: str
+    distance_bucket: DistanceBucket
+    summary: str

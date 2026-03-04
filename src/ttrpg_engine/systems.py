@@ -15,6 +15,7 @@ from ttrpg_engine.components import (
     CurrentAction,
     DistanceBucket,
     EndTurnCommand,
+    EnvironmentImpulse,
     Faction,
     FactionFlags,
     FactionGoals,
@@ -48,6 +49,7 @@ from ttrpg_engine.events import (
     ActorImpulseEvent,
     ActorLocationChangedEvent,
     ActorRegisteredEvent,
+    EnvironmentImpulseEvent,
     FactionUpdatedEvent,
     PlayerActionEvent,
 )
@@ -58,6 +60,12 @@ _DISTANCE_PRIORITY: dict[DistanceBucket, int] = {
     DistanceBucket.NEAR: 2,
     DistanceBucket.FAR: 3,
     DistanceBucket.DISTANT: 4,
+}
+
+_DIRECT_IMPULSE_BUCKETS = {
+    DistanceBucket.ENGAGED,
+    DistanceBucket.CLOSE,
+    DistanceBucket.NEAR,
 }
 
 
@@ -507,6 +515,7 @@ class ActorAgencySystem:
                 EntityQuery(all_of=(ActorComponent, ActorAgency, ScenePresence))
             )
             candidates: list[tuple[int, int]] = []
+            environment_candidates: list[int] = []
             for actor_entity in actor_entities:
                 scene_position = _get_or_create_scene_position(world, actor_entity)
                 if scene_position.scene_id != state.current_location:
@@ -522,15 +531,91 @@ class ActorAgencySystem:
                     replace(initiative, turns_since_last_impulse=turns_since),
                 )
                 if turns_since >= initiative.min_turns_between_impulses:
-                    priority = _DISTANCE_PRIORITY[scene_position.distance_bucket]
-                    candidates.append((priority, actor_entity))
+                    if scene_position.distance_bucket in _DIRECT_IMPULSE_BUCKETS:
+                        priority = _DISTANCE_PRIORITY[scene_position.distance_bucket]
+                        candidates.append((priority, actor_entity))
+                    else:
+                        environment_candidates.append(actor_entity)
+
+            impulse_entity_ids: list[int] = []
+            environment_impulse_entity_ids: list[int] = []
+
+            for actor_entity in sorted(environment_candidates):
+                agency = world.get_component(actor_entity, ActorAgency)
+                goal = _select_goal(agency, state.turn_id, actor_entity)
+                position = world.get_component(actor_entity, ScenePosition)
+                summary = _build_environment_summary(goal, position)
+
+                world.add_component(
+                    actor_entity,
+                    replace(
+                        agency,
+                        short_term_goal=goal,
+                        impulse=summary,
+                        last_impulse_turn=state.turn_id,
+                    ),
+                )
+                world.add_component(
+                    actor_entity,
+                    CurrentAction(
+                        description=summary,
+                        source=f"{self.name}:environment",
+                        turn_id=state.turn_id,
+                    ),
+                )
+                _append_action_history(
+                    world=world,
+                    actor_entity=actor_entity,
+                    record=ActionRecord(
+                        turn_id=state.turn_id,
+                        action=summary,
+                        source=f"{self.name}:environment",
+                        note=f"goal={goal}",
+                    ),
+                )
+                world.add_component(
+                    actor_entity,
+                    replace(
+                        world.get_component(actor_entity, InitiativeState),
+                        last_impulse_turn=state.turn_id,
+                        turns_since_last_impulse=0,
+                    ),
+                )
+
+                impulse_entity = world.create_entity()
+                world.add_component(
+                    impulse_entity,
+                    EnvironmentImpulse(
+                        actor_entity_id=actor_entity,
+                        turn_id=state.turn_id,
+                        scene_id=state.current_location,
+                        zone=position.zone,
+                        distance_bucket=position.distance_bucket,
+                        summary=summary,
+                    ),
+                )
+                world.publish(
+                    EnvironmentImpulseEvent(
+                        actor_entity_id=actor_entity,
+                        scene_id=state.current_location,
+                        turn_id=state.turn_id,
+                        zone=position.zone,
+                        distance_bucket=position.distance_bucket.value,
+                        summary=summary,
+                        source=f"{self.name}:environment",
+                    )
+                )
+                environment_impulse_entity_ids.append(impulse_entity)
 
             if not candidates:
                 processed.append(
                     {
                         "kernel_entity": kernel_entity,
                         "selected_actor_ids": [],
-                        "impulse_entity_ids": [],
+                        "impulse_entity_ids": impulse_entity_ids,
+                        "environment_impulse_entity_ids": (
+                            environment_impulse_entity_ids
+                        ),
                     }
                 )
                 continue
@@ -550,7 +635,6 @@ class ActorAgencySystem:
                 for _, actor_entity in ranked[:selection_count]
             )
 
-            impulse_entity_ids: list[int] = []
             for actor_entity in selected:
                 agency = world.get_component(actor_entity, ActorAgency)
                 goal = _select_goal(agency, state.turn_id, actor_entity)
@@ -629,6 +713,7 @@ class ActorAgencySystem:
                     "kernel_entity": kernel_entity,
                     "selected_actor_ids": selected,
                     "impulse_entity_ids": impulse_entity_ids,
+                    "environment_impulse_entity_ids": environment_impulse_entity_ids,
                 }
             )
 
@@ -1009,6 +1094,14 @@ def _build_impulse(goal: str) -> str:
     if "escape" in normalized or "flee" in normalized:
         return "pulls back toward safer ground"
     return f"acts toward goal: {goal}"
+
+
+def _build_environment_summary(goal: str, position: ScenePosition) -> str:
+    """Build a concise distant-scene observation summary for narration layers."""
+    return (
+        f"in the {position.distance_bucket.value} {position.zone} zone, "
+        f"someone acts toward: {goal}"
+    )
 
 
 def _derive_short_term_goal(

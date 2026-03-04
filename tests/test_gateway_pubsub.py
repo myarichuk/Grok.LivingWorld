@@ -19,7 +19,11 @@ from ttrpg_engine.components import (
     ScenePosition,
     TurnPhase,
 )
-from ttrpg_engine.events import ActorImpulseEvent, ActorRegisteredEvent
+from ttrpg_engine.events import (
+    ActorImpulseEvent,
+    ActorRegisteredEvent,
+    EnvironmentImpulseEvent,
+)
 from ttrpg_engine.systems import LLMActorGatewaySystem
 
 
@@ -131,3 +135,23 @@ def test_world_pubsub_allows_external_api_actor_impulse_event() -> None:
     consumed = world.consume_published_events(ActorImpulseEvent)
     assert consumed == [external_event]
     assert world.get_published_events(ActorImpulseEvent) == []
+
+
+def test_world_pubsub_supports_environment_impulse_event() -> None:
+    world = World()
+
+    seen: list[EnvironmentImpulseEvent] = []
+    world.subscribe(EnvironmentImpulseEvent, seen.append)
+
+    event = EnvironmentImpulseEvent(
+        actor_entity_id=10,
+        scene_id="cliff",
+        turn_id=6,
+        zone="horizon",
+        distance_bucket="distant",
+        summary="in the distant horizon zone, someone acts toward: lead a giraffe",
+        source="actor_agency:environment",
+    )
+    world.publish(event)
+
+    assert seen == [event]

@@ -10,6 +10,7 @@ from ttrpg_engine.components import (
     ActorImpulse,
     CurrentAction,
     DistanceBucket,
+    EnvironmentImpulse,
     InitiativeState,
     KernelState,
     ScenePosition,
@@ -251,3 +252,54 @@ def test_actor_agency_prioritizes_closer_distance_buckets() -> None:
     result = ActorAgencySystem().run(world, [kernel])
     selected = result.payload["processed"][0]["selected_actor_ids"]
     assert selected == sorted([engaged, close])
+    assert result.payload["processed"][0]["environment_impulse_entity_ids"] != []
+
+
+def test_actor_agency_routes_far_actors_to_environment_impulses() -> None:
+    world = World()
+    kernel = world.create_entity()
+    world.add_component(
+        kernel,
+        KernelState(
+            phase=TurnPhase.RESOLVING,
+            turn_id=5,
+            current_location="ridge",
+            rng_seed=1337,
+            rng_draws=0,
+        ),
+    )
+
+    near_actor = world.create_entity()
+    world.add_component(near_actor, NpcActor("Companion"))
+    world.add_component(near_actor, ScenePresence("ridge"))
+    world.add_component(
+        near_actor,
+        ScenePosition(
+            scene_id="ridge",
+            zone="campfire",
+            distance_bucket=DistanceBucket.CLOSE,
+        ),
+    )
+    world.add_component(near_actor, ActorAgency(possible_goals=("protect allies",)))
+
+    far_actor = world.create_entity()
+    world.add_component(far_actor, NpcActor("Horizon Knight"))
+    world.add_component(far_actor, ScenePresence("ridge"))
+    world.add_component(
+        far_actor,
+        ScenePosition(
+            scene_id="ridge",
+            zone="horizon",
+            distance_bucket=DistanceBucket.DISTANT,
+        ),
+    )
+    world.add_component(far_actor, ActorAgency(possible_goals=("lead a giraffe",)))
+
+    result = ActorAgencySystem().run(world, [kernel]).payload["processed"][0]
+    assert result["selected_actor_ids"] == [near_actor]
+    assert result["environment_impulse_entity_ids"]
+
+    direct_impulses = world.query(EntityQuery(all_of=(ActorImpulse,)))
+    env_impulses = world.query(EntityQuery(all_of=(EnvironmentImpulse,)))
+    assert len(direct_impulses) == 1
+    assert len(env_impulses) == 1

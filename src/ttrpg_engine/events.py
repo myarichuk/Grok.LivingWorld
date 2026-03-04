@@ -56,3 +56,14 @@ class ActorLocationChangedEvent:
     to_zone: str
     to_distance_bucket: str
     source: str
+
+
+@dataclass(frozen=True)
+class EnvironmentImpulseEvent:
+    actor_entity_id: int
+    scene_id: str
+    turn_id: int
+    zone: str
+    distance_bucket: str
+    summary: str
+    source: str
