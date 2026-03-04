@@ -1,8 +1,10 @@
 # Grok Bootstrap Guide
 
-Primary path: use one prepared installer script (`scripts/grok_src_dropper.py`) that contains plain source code for every `src/*.py` file and writes them out in one run.
+Primary REPL path: use one unified runtime script (`scripts/grok_unified_engine.py`) that embeds all project modules in one file and serves them via in-memory imports (no filesystem writes).
 
-Hardened path: `scripts/grok_repl_bundle.py` adds extra hash/doctor checks.
+Filesystem path: `scripts/grok_src_dropper.py` writes all `src/*.py` files in one run.
+
+Hardened filesystem path: `scripts/grok_repl_bundle.py` adds extra hash/doctor checks.
 
 Fallback path: raw `src/*.py` download list is kept below.
 
@@ -53,7 +55,41 @@ Use one raw URL per path. Replace `<REF>` with a pinned commit SHA (if specified
 - `https://raw.githubusercontent.com/myarichuk/Grok.LivingWorld/<REF>/src/ttrpg_engine/events.py`
 - `https://raw.githubusercontent.com/myarichuk/Grok.LivingWorld/<REF>/src/ttrpg_engine/systems.py`
 
-## Preferred Bootstrap (Plain Single File)
+## Preferred Bootstrap (Unified Runtime, No File Writes)
+
+1. Generate unified runtime in repo root:
+
+```bash
+python scripts/grok_prepare_unified_runtime.py
+```
+
+2. Download generated file in Grok target:
+
+- `https://raw.githubusercontent.com/myarichuk/Grok.LivingWorld/<REF>/scripts/grok_unified_engine.py`
+
+3. Run importer smoke check:
+
+```bash
+python grok_unified_engine.py --check
+```
+
+Expected output:
+
+- `importer=installed`
+- `check=ok`
+
+4. Use inside Python session:
+
+```python
+import grok_unified_engine as engine
+engine.install_importer()
+
+from ecs import World
+from ttrpg_engine import KernelState, TurnPhase
+from ttrpg_5e import Actor5eFactory
+```
+
+## Filesystem Bootstrap (Plain Single File)
 
 1. Generate the dropper in repo root:
 
@@ -147,4 +183,4 @@ pytest
 - Do not prepend helper text like `text` before Python module docstrings.
 - Preserve ASCII exactly as in source.
 - Prefer pinned commit SHA in `<REF>` for reproducible deployments.
-- Prefer single-file install (`scripts/grok_src_dropper.py` or `scripts/grok_repl_bundle.py`) over per-file raw fetch.
+- Prefer single-file install (`scripts/grok_unified_engine.py`, `scripts/grok_src_dropper.py`, or `scripts/grok_repl_bundle.py`) over per-file raw fetch.
