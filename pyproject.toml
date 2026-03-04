@@ -26,6 +26,10 @@ addopts = "-q"
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+extend-exclude = [
+  "scripts/grok_src_dropper.py",
+  "scripts/grok_repl_bundle.py",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

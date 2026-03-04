@@ -1,6 +1,10 @@
 # Grok Bootstrap Guide
 
-This file defines the canonical Python source file list for `src/` and how Grok should bootstrap a clean runtime from GitHub raw files.
+Primary path: use one prepared installer script (`scripts/grok_src_dropper.py`) that contains plain source code for every `src/*.py` file and writes them out in one run.
+
+Hardened path: `scripts/grok_repl_bundle.py` adds extra hash/doctor checks.
+
+Fallback path: raw `src/*.py` download list is kept below.
 
 ## Maintain This List
 
@@ -49,7 +53,56 @@ Use one raw URL per path. Replace `<REF>` with a pinned commit SHA (if specified
 - `https://raw.githubusercontent.com/myarichuk/Grok.LivingWorld/<REF>/src/ttrpg_engine/events.py`
 - `https://raw.githubusercontent.com/myarichuk/Grok.LivingWorld/<REF>/src/ttrpg_engine/systems.py`
 
-## Grok Bootstrap Steps
+## Preferred Bootstrap (Plain Single File)
+
+1. Generate the dropper in repo root:
+
+```bash
+python scripts/grok_prepare_single_file.py
+```
+
+2. Download generated file in Grok target:
+
+- `https://raw.githubusercontent.com/myarichuk/Grok.LivingWorld/<REF>/scripts/grok_src_dropper.py`
+
+3. Run dropper:
+
+```bash
+python grok_src_dropper.py --root .
+```
+
+Expected output:
+
+- `install=ok`
+- `verify=ok`
+
+## Hardened Bootstrap (Single File + Hash/Doctor)
+
+1. Download bundle script:
+
+- `https://raw.githubusercontent.com/myarichuk/Grok.LivingWorld/<REF>/scripts/grok_repl_bundle.py`
+
+2. Run bundle in target root:
+
+```bash
+python grok_repl_bundle.py --root .
+```
+
+Expected output:
+
+- `install=ok`
+- `verify=ok`
+- `doctor=ok`
+
+3. Optional checks from repo (if scripts are present):
+
+```bash
+python scripts/check_source_integrity.py
+python scripts/grok_repl_doctor.py
+pytest
+```
+
+## Fallback Bootstrap (Raw Files)
 
 1. Create project root and directories:
 
@@ -94,3 +147,4 @@ pytest
 - Do not prepend helper text like `text` before Python module docstrings.
 - Preserve ASCII exactly as in source.
 - Prefer pinned commit SHA in `<REF>` for reproducible deployments.
+- Prefer single-file install (`scripts/grok_src_dropper.py` or `scripts/grok_repl_bundle.py`) over per-file raw fetch.
