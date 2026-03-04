@@ -54,6 +54,22 @@ def test_world_db_query_sort_tolerates_non_numeric_turn(tmp_path: Path) -> None:
         assert [row["id"] for row in rows] == ["b", "a", "c"]
 
 
+def test_world_db_append_batch_writes_multiple_docs(tmp_path: Path) -> None:
+    db_path = tmp_path / "world.db"
+    with WorldDB(str(db_path)) as db:
+        ids = db.append_batch(
+            [
+                {"turn": 1, "event": "a"},
+                {"turn": 2, "event": "b"},
+                {"id": "fixed", "turn": 3, "event": "c"},
+            ]
+        )
+        assert ids == ["1", "2", "fixed"]
+        assert db.get("1") is not None
+        assert db.get("2") is not None
+        assert db.get("fixed") is not None
+
+
 def test_world_db_persists_and_rebuilds_indexes_after_reopen(tmp_path: Path) -> None:
     db_path = tmp_path / "world.db"
 
@@ -136,7 +152,26 @@ def test_world_db_compresses_large_payload_and_restores_on_read(tmp_path: Path) 
         assert mmap_loaded["payload"]["blob"] == "x" * 5000
 
     raw = db_path.read_text(encoding="utf-8")
-    assert "__payload_zlib_b64__" in raw
+    assert "__payload_zlib_b64__" in raw or "__doc_zlib_b64__" in raw
+
+
+def test_world_db_turn_range_query_with_scene_filter(tmp_path: Path) -> None:
+    db_path = tmp_path / "world.db"
+    with WorldDB(str(db_path)) as db:
+        db.append_batch(
+            [
+                {"id": "a", "turn": 10, "scene_id": "dock", "event": "watch shift"},
+                {"id": "b", "turn": 11, "scene_id": "dock", "event": "ship arrives"},
+                {"id": "c", "turn": 11, "scene_id": "tavern", "event": "song starts"},
+                {"id": "d", "turn": 12, "scene_id": "dock", "event": "cargo moved"},
+            ]
+        )
+
+        dock_rows = db.query_turn_range(11, 12, scene_id="dock")
+        assert [row["id"] for row in dock_rows] == ["b", "d"]
+
+        any_rows = db.query_turn_range(10, 11)
+        assert [row["id"] for row in any_rows] == ["a", "b", "c"]
 
 
 def test_world_db_skips_corrupt_lines(tmp_path: Path) -> None:

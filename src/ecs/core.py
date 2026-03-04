@@ -6,6 +6,7 @@ import importlib
 import os
 import tempfile
 import uuid
+import warnings
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from enum import Enum
@@ -127,7 +128,12 @@ class World:
             self.storage_path = path
             self._storage = WorldDB(path)
             self._load_from_storage()
-        except Exception:
+        except Exception as exc:
+            warnings.warn(
+                f"ECS storage unavailable, falling back to in-memory only: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             self._storage = None
 
     def close(self) -> None:
@@ -371,6 +377,11 @@ class World:
         if self._storage is None:
             return
         if not hasattr(self._storage, "iter_docs"):
+            warnings.warn(
+                "ECS storage backend does not support iter_docs; skipping rehydrate.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             return
 
         try:

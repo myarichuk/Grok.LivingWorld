@@ -25,6 +25,7 @@ _INDEX_FIELDS = (
     "scene_id",
 )
 _COMPRESSED_FIELD = "__payload_zlib_b64__"
+_DOC_COMPRESSED_FIELD = "__doc_zlib_b64__"
 _COMPRESS_MIN_BYTES = 256
 
 
@@ -39,6 +40,8 @@ class WorldDB:
     def __init__(self, path: str = "world.db") -> None:
         self.path = path
         self._index: dict[str, list[str]] = defaultdict(list)
+        self._turn_index: dict[int, list[str]] = defaultdict(list)
+        self._scene_index: dict[str, list[str]] = defaultdict(list)
         self._data: dict[str, dict[str, Any]] = {}
         self._offsets: dict[str, tuple[int, int]] = {}
         self._tombstones: set[str] = set()
@@ -105,6 +108,8 @@ class WorldDB:
 
     def _rebuild_from_file(self) -> None:
         self._index.clear()
+        self._turn_index.clear()
+        self._scene_index.clear()
         self._data.clear()
         self._offsets.clear()
         self._tombstones.clear()
@@ -174,17 +179,34 @@ class WorldDB:
     def _index_doc(self, key: str, doc: dict[str, Any]) -> None:
         for term in self._doc_terms(doc):
             _insert_sorted_unique(self._index[term], key)
+        turn = _turn_sort_key(doc)
+        _insert_sorted_unique(self._turn_index[turn], key)
+        scene_id = _scene_id_key(doc)
+        if scene_id:
+            _insert_sorted_unique(self._scene_index[scene_id], key)
 
-    def _deindex_key(self, key: str) -> None:
-        for keys in self._index.values():
+    def _deindex_key(self, key: str, doc: dict[str, Any]) -> None:
+        for term in self._doc_terms(doc):
+            keys = self._index.get(term)
+            if keys is None:
+                continue
             _remove_sorted(keys, key)
+        turn = _turn_sort_key(doc)
+        turn_keys = self._turn_index.get(turn)
+        if turn_keys is not None:
+            _remove_sorted(turn_keys, key)
+        scene_id = _scene_id_key(doc)
+        if scene_id:
+            scene_keys = self._scene_index.get(scene_id)
+            if scene_keys is not None:
+                _remove_sorted(scene_keys, key)
 
     def _is_tombstone(self, doc: dict[str, Any]) -> bool:
         return bool(doc.get("tombstone"))
 
     def _apply_doc(self, key: str, doc: dict[str, Any]) -> None:
         if key in self._data:
-            self._deindex_key(key)
+            self._deindex_key(key, self._data[key])
 
         if self._is_tombstone(doc):
             self._data[key] = doc
@@ -198,25 +220,44 @@ class WorldDB:
     def _encode_doc_for_storage(self, doc: dict[str, Any]) -> dict[str, Any]:
         encoded = dict(doc)
         payload = encoded.get("payload")
-        if payload is None:
-            return encoded
+        if payload is not None:
+            try:
+                payload_json = json.dumps(payload, ensure_ascii=False)
+            except (TypeError, ValueError):
+                payload_json = ""
+            payload_bytes = payload_json.encode("utf-8")
+            if len(payload_bytes) >= _COMPRESS_MIN_BYTES:
+                compressed = zlib.compress(payload_bytes)
+                encoded.pop("payload", None)
+                encoded[_COMPRESSED_FIELD] = base64.b64encode(compressed).decode(
+                    "ascii"
+                )
 
         try:
-            payload_json = json.dumps(payload, ensure_ascii=False)
+            encoded_json = json.dumps(encoded, ensure_ascii=False)
         except (TypeError, ValueError):
-            return encoded
+            return dict(doc)
 
-        payload_bytes = payload_json.encode("utf-8")
-        if len(payload_bytes) < _COMPRESS_MIN_BYTES:
+        encoded_bytes = encoded_json.encode("utf-8")
+        if len(encoded_bytes) < _COMPRESS_MIN_BYTES:
             return encoded
-
-        compressed = zlib.compress(payload_bytes)
-        encoded.pop("payload", None)
-        encoded[_COMPRESSED_FIELD] = base64.b64encode(compressed).decode("ascii")
-        return encoded
+        compressed_doc = zlib.compress(encoded_bytes)
+        return {_DOC_COMPRESSED_FIELD: base64.b64encode(compressed_doc).decode("ascii")}
 
     def _decode_doc_for_runtime(self, doc: dict[str, Any]) -> dict[str, Any]:
         decoded = dict(doc)
+        encoded_doc = decoded.get(_DOC_COMPRESSED_FIELD)
+        if isinstance(encoded_doc, str):
+            try:
+                compressed_doc = base64.b64decode(encoded_doc)
+                decoded_doc = zlib.decompress(compressed_doc).decode("utf-8")
+                parsed_doc = json.loads(decoded_doc)
+            except (ValueError, TypeError, zlib.error, json.JSONDecodeError):
+                return decoded
+            if not isinstance(parsed_doc, dict):
+                return decoded
+            decoded = dict(parsed_doc)
+
         encoded_payload = decoded.get(_COMPRESSED_FIELD)
         if not isinstance(encoded_payload, str):
             return decoded
@@ -237,31 +278,47 @@ class WorldDB:
 
         If ``id`` is absent, a numeric id is assigned.
         """
-        runtime_doc = dict(doc)
-        if "id" not in runtime_doc:
-            runtime_doc["id"] = str(self._next_id)
-            self._next_id += 1
+        return self.append_batch([doc])[0]
 
-        key = str(runtime_doc["id"])
-        storage_doc = self._encode_doc_for_storage(runtime_doc)
-        line = json.dumps(storage_doc, ensure_ascii=False) + "\n"
-        encoded = line.encode("utf-8")
+    def append_batch(self, docs: list[dict[str, Any]]) -> list[str]:
+        """Append multiple docs with a single file write/flush cycle."""
+        if not docs:
+            return []
+
+        runtime_docs: list[dict[str, Any]] = []
+        encoded_lines: list[bytes] = []
+        keys: list[str] = []
+        for incoming in docs:
+            runtime_doc = dict(incoming)
+            if "id" not in runtime_doc:
+                runtime_doc["id"] = str(self._next_id)
+                self._next_id += 1
+            key = str(runtime_doc["id"])
+            storage_doc = self._encode_doc_for_storage(runtime_doc)
+            encoded_lines.append(
+                (json.dumps(storage_doc, ensure_ascii=False) + "\n").encode("utf-8")
+            )
+            runtime_docs.append(runtime_doc)
+            keys.append(key)
 
         if self._fh is None:
             self._open_storage()
         assert self._fh is not None
 
         self._fh.seek(0, os.SEEK_END)
-        start = self._fh.tell()
-        self._fh.write(encoded)
+        cursor = self._fh.tell()
+        for key, runtime_doc, encoded in zip(
+            keys, runtime_docs, encoded_lines, strict=True
+        ):
+            start = cursor
+            self._fh.write(encoded)
+            cursor += len(encoded)
+            self._apply_doc(key, runtime_doc)
+            self._offsets[key] = (start, cursor)
         self._fh.flush()
-        end = self._fh.tell()
-
-        self._apply_doc(key, runtime_doc)
-        self._offsets[key] = (start, end)
         self._mmap_stale = True
         self._dirty = True
-        return key
+        return keys
 
     def delete(self, key: str, turn: int | None = None) -> bool:
         """Soft-delete document by appending a tombstone record."""
@@ -388,6 +445,33 @@ class WorldDB:
         docs.sort(key=lambda doc: (-_turn_sort_key(doc), str(doc.get("id", ""))))
         return docs[: max(0, limit)]
 
+    def query_turn_range(
+        self,
+        turn_min: int,
+        turn_max: int,
+        scene_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return docs in a turn range, optionally filtered by scene id."""
+        if turn_min > turn_max:
+            return []
+
+        keys: set[str] = set()
+        for turn in range(turn_min, turn_max + 1):
+            keys.update(self._turn_index.get(turn, []))
+
+        if scene_id is not None:
+            scene_keys = set(self._scene_index.get(scene_id, []))
+            keys &= scene_keys
+
+        docs = [
+            self._data[key]
+            for key in keys
+            if key in self._data and key not in self._tombstones
+        ]
+        docs.sort(key=lambda doc: (_turn_sort_key(doc), str(doc.get("id", ""))))
+        return docs[: max(0, limit)]
+
     def export_checkpoint(self) -> str:
         """Export full in-memory state as base64(zlib(json))."""
         if not self._dirty:
@@ -414,6 +498,8 @@ class WorldDB:
             return -1
 
         self._index.clear()
+        self._turn_index.clear()
+        self._scene_index.clear()
         self._data.clear()
         self._offsets.clear()
         self._tombstones.clear()
@@ -439,6 +525,8 @@ class WorldDB:
             "next_id": self._next_id,
             "file_size_bytes": file_size,
             "indexed_terms": len(self._index),
+            "turn_buckets": len(self._turn_index),
+            "scene_buckets": len(self._scene_index),
             "corrupt_lines": self._corrupt_lines,
             "tombstones": len(self._tombstones),
         }
@@ -471,3 +559,10 @@ def _turn_sort_key(doc: dict[str, Any]) -> int:
         return int(value)
     except (TypeError, ValueError):
         return -1
+
+
+def _scene_id_key(doc: dict[str, Any]) -> str:
+    scene_id = doc.get("scene_id")
+    if isinstance(scene_id, str):
+        return scene_id
+    return ""
