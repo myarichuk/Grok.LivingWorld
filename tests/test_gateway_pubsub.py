@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ecs.core import World
+from ecs.core import EntityQuery, World
 from ttrpg_engine.components import (
     ActionHistory,
     ActorAgency,
@@ -12,6 +12,8 @@ from ttrpg_engine.components import (
     InitiativeState,
     KernelState,
     LLMActorRegistrationCommand,
+    Location,
+    LocationOccupancy,
     LongTermGoals,
     NarrativeActor,
     ScenePosition,
@@ -92,6 +94,11 @@ def test_llm_actor_gateway_registers_actor_and_publishes_events() -> None:
     assert history.records[-1].action == "negotiating over contraband"
     assert scene_position.zone == "pier_a"
     assert scene_position.distance_bucket.value == "close"
+
+    location_entities = world.query(EntityQuery(all_of=(Location,)))
+    assert len(location_entities) == 1
+    occupancy = world.get_component(location_entities[0], LocationOccupancy)
+    assert occupancy.actor_entity_ids == (registered_actor,)
 
     assert len(registered_events) == 1
     assert registered_events[0].actor_entity_id == registered_actor

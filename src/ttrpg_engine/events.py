@@ -46,3 +46,13 @@ class PlayerActionEvent:
     intent: str
     target_entity_id: int | None
     source: str
+
+
+@dataclass(frozen=True)
+class ActorLocationChangedEvent:
+    actor_entity_id: int
+    from_scene_id: str
+    to_scene_id: str
+    to_zone: str
+    to_distance_bucket: str
+    source: str

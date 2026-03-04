@@ -29,10 +29,14 @@ from ttrpg_engine.components import (
     LLMFactionUpdateCommand,
     LLMPlayerAgencyCommand,
     LLMResponse,
+    Location,
+    LocationOccupancy,
     LongTermGoals,
+    MoveActorLocationCommand,
     NarrativeActor,
     NeedsLLMFill,
     PlayerActor,
+    RegisterActorLocationCommand,
     RequestRegistry,
     ResolvedLLMResult,
     ScenePosition,
@@ -42,6 +46,7 @@ from ttrpg_engine.components import (
 )
 from ttrpg_engine.events import (
     ActorImpulseEvent,
+    ActorLocationChangedEvent,
     ActorRegisteredEvent,
     FactionUpdatedEvent,
     PlayerActionEvent,
@@ -345,6 +350,147 @@ class EndTurnSystem:
 
 
 @dataclass
+class LocationRegistrationSystem:
+    """Register actors into location occupancy and scene position state."""
+
+    name: str = "location_registration"
+    query: EntityQuery = EntityQuery(all_of=(RegisterActorLocationCommand,))
+
+    def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Register actor presence in a scene and keep occupancy lists in sync."""
+        registered: list[dict[str, object]] = []
+        rejected: list[dict[str, object]] = []
+
+        for command_entity in entities:
+            command = world.get_component(command_entity, RegisterActorLocationCommand)
+            actor_entity = command.actor_entity_id
+
+            if not world.has_component(actor_entity, ActorComponent):
+                rejected.append(
+                    {
+                        "command_entity": command_entity,
+                        "actor_entity": actor_entity,
+                        "reason": "actor is missing ActorComponent",
+                    }
+                )
+                world.remove_component(command_entity, RegisterActorLocationCommand)
+                continue
+
+            from_scene = _get_actor_scene_id(world, actor_entity)
+            to_scene = command.scene_id
+            zone = command.zone.strip() or "default"
+            bucket = _parse_distance_bucket(command.distance_bucket)
+
+            _assign_actor_location(
+                world=world,
+                actor_entity=actor_entity,
+                to_scene_id=to_scene,
+                zone=zone,
+                distance_bucket=bucket,
+            )
+            world.remove_component(command_entity, RegisterActorLocationCommand)
+
+            if from_scene and from_scene != to_scene:
+                world.publish(
+                    ActorLocationChangedEvent(
+                        actor_entity_id=actor_entity,
+                        from_scene_id=from_scene,
+                        to_scene_id=to_scene,
+                        to_zone=zone,
+                        to_distance_bucket=bucket.value,
+                        source=self.name,
+                    )
+                )
+
+            registered.append(
+                {
+                    "command_entity": command_entity,
+                    "actor_entity": actor_entity,
+                    "scene_id": to_scene,
+                    "zone": zone,
+                    "distance_bucket": bucket.value,
+                    "from_scene_id": from_scene,
+                }
+            )
+
+        return SystemResult(
+            self.name,
+            len(entities),
+            {"registered": registered, "rejected": rejected},
+        )
+
+
+@dataclass
+class ActorLocationChangeSystem:
+    """Move actors between scene locations and update occupancy."""
+
+    name: str = "actor_location_change"
+    query: EntityQuery = EntityQuery(all_of=(MoveActorLocationCommand,))
+
+    def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Apply move commands and publish location-change events."""
+        moved: list[dict[str, object]] = []
+        rejected: list[dict[str, object]] = []
+
+        for command_entity in entities:
+            command = world.get_component(command_entity, MoveActorLocationCommand)
+            actor_entity = command.actor_entity_id
+            if not world.has_component(actor_entity, ActorComponent):
+                rejected.append(
+                    {
+                        "command_entity": command_entity,
+                        "actor_entity": actor_entity,
+                        "reason": "actor is missing ActorComponent",
+                    }
+                )
+                world.remove_component(command_entity, MoveActorLocationCommand)
+                continue
+
+            from_scene = _get_actor_scene_id(world, actor_entity)
+            to_scene = command.to_scene_id
+            zone = command.to_zone.strip() or "default"
+            bucket = _parse_distance_bucket(command.to_distance_bucket)
+
+            _assign_actor_location(
+                world=world,
+                actor_entity=actor_entity,
+                to_scene_id=to_scene,
+                zone=zone,
+                distance_bucket=bucket,
+            )
+            _sync_kernel_location_for_player(world, actor_entity, to_scene)
+            world.remove_component(command_entity, MoveActorLocationCommand)
+
+            world.publish(
+                ActorLocationChangedEvent(
+                    actor_entity_id=actor_entity,
+                    from_scene_id=from_scene,
+                    to_scene_id=to_scene,
+                    to_zone=zone,
+                    to_distance_bucket=bucket.value,
+                    source=self.name,
+                )
+            )
+
+            moved.append(
+                {
+                    "command_entity": command_entity,
+                    "actor_entity": actor_entity,
+                    "from_scene_id": from_scene,
+                    "to_scene_id": to_scene,
+                    "zone": zone,
+                    "distance_bucket": bucket.value,
+                }
+            )
+
+        return SystemResult(
+            self.name,
+            len(entities),
+            {"moved": moved, "rejected": rejected},
+        )
+
+
+@dataclass
 class ActorAgencySystem:
     """Select 2-3 actors in the current scene and execute impulse actions."""
 
@@ -525,16 +671,14 @@ class LLMActorGatewaySystem:
                 command.faction_traits,
                 inherited_flags,
             )
-            world.add_component(actor_entity, ScenePresence(scene_id=command.scene_id))
             scene_zone = command.scene_zone.strip() or "default"
             distance_bucket = _parse_distance_bucket(command.scene_distance_bucket)
-            world.add_component(
-                actor_entity,
-                ScenePosition(
-                    scene_id=command.scene_id,
-                    zone=scene_zone,
-                    distance_bucket=distance_bucket,
-                ),
+            from_scene = _assign_actor_location(
+                world=world,
+                actor_entity=actor_entity,
+                to_scene_id=command.scene_id,
+                zone=scene_zone,
+                distance_bucket=distance_bucket,
             )
             world.add_component(
                 actor_entity,
@@ -624,6 +768,17 @@ class LLMActorGatewaySystem:
                     scene_distance_bucket=distance_bucket.value,
                 )
             )
+            if from_scene and from_scene != command.scene_id:
+                world.publish(
+                    ActorLocationChangedEvent(
+                        actor_entity_id=actor_entity,
+                        from_scene_id=from_scene,
+                        to_scene_id=command.scene_id,
+                        to_zone=scene_zone,
+                        to_distance_bucket=distance_bucket.value,
+                        source=self.name,
+                    )
+                )
             world.publish(
                 ActorImpulseEvent(
                     actor_entity_id=actor_entity,
@@ -648,6 +803,7 @@ class LLMActorGatewaySystem:
                     "current_action": current_action,
                     "scene_zone": scene_zone,
                     "scene_distance_bucket": distance_bucket.value,
+                    "from_scene_id": from_scene,
                 }
             )
 
@@ -923,6 +1079,83 @@ def _append_action_history(
         world.add_component(actor_entity, ActionHistory(history.records + (record,)))
         return
     world.add_component(actor_entity, ActionHistory(records=(record,)))
+
+
+def _get_actor_scene_id(world: World, actor_entity: int) -> str:
+    """Return actor current scene id, empty string when unset."""
+    if not world.has_component(actor_entity, ScenePresence):
+        return ""
+    return world.get_component(actor_entity, ScenePresence).scene_id
+
+
+def _ensure_location_entity(world: World, scene_id: str) -> int:
+    """Get or create location entity for a scene id."""
+    for entity in world.query(EntityQuery(all_of=(Location,))):
+        location = world.get_component(entity, Location)
+        if location.scene_id == scene_id:
+            return entity
+
+    entity = world.create_entity()
+    world.add_component(entity, Location(scene_id=scene_id))
+    world.add_component(entity, LocationOccupancy())
+    return entity
+
+
+def _assign_actor_location(
+    world: World,
+    actor_entity: int,
+    to_scene_id: str,
+    zone: str,
+    distance_bucket: DistanceBucket,
+) -> str:
+    """Assign actor to destination scene and update source/destination occupancy."""
+    from_scene = _get_actor_scene_id(world, actor_entity)
+
+    if from_scene:
+        from_location_entity = _ensure_location_entity(world, from_scene)
+        occupancy = world.get_component(from_location_entity, LocationOccupancy)
+        world.add_component(
+            from_location_entity,
+            LocationOccupancy(
+                actor_entity_ids=tuple(
+                    entity
+                    for entity in occupancy.actor_entity_ids
+                    if entity != actor_entity
+                )
+            ),
+        )
+
+    to_location_entity = _ensure_location_entity(world, to_scene_id)
+    occupancy = world.get_component(to_location_entity, LocationOccupancy)
+    if actor_entity not in occupancy.actor_entity_ids:
+        world.add_component(
+            to_location_entity,
+            LocationOccupancy(
+                actor_entity_ids=occupancy.actor_entity_ids + (actor_entity,)
+            ),
+        )
+
+    world.add_component(actor_entity, ScenePresence(scene_id=to_scene_id))
+    world.add_component(
+        actor_entity,
+        ScenePosition(
+            scene_id=to_scene_id,
+            zone=zone,
+            distance_bucket=distance_bucket,
+        ),
+    )
+    return from_scene
+
+
+def _sync_kernel_location_for_player(
+    world: World, actor_entity: int, to_scene_id: str
+) -> None:
+    """When moved actor is a player, sync kernel current location to destination."""
+    if not world.has_component(actor_entity, PlayerActor):
+        return
+    for kernel_entity in world.query(EntityQuery(all_of=(KernelState,))):
+        state = world.get_component(kernel_entity, KernelState)
+        world.add_component(kernel_entity, replace(state, current_location=to_scene_id))
 
 
 def _parse_distance_bucket(value: str) -> DistanceBucket:

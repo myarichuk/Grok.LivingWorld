@@ -35,6 +35,12 @@ from ttrpg_engine.components.llm import (
     ResolvedLLMResult,
     StartTurnCommand,
 )
+from ttrpg_engine.components.location import (
+    Location,
+    LocationOccupancy,
+    MoveActorLocationCommand,
+    RegisterActorLocationCommand,
+)
 from ttrpg_engine.components.player import PlayerActor
 
 __all__ = [
@@ -60,10 +66,14 @@ __all__ = [
     "LLMFactionUpdateCommand",
     "LLMPlayerAgencyCommand",
     "LLMResponse",
+    "Location",
+    "LocationOccupancy",
     "LongTermGoals",
+    "MoveActorLocationCommand",
     "NarrativeActor",
     "NeedsLLMFill",
     "PlayerActor",
+    "RegisterActorLocationCommand",
     "RequestRegistry",
     "ResolvedLLMResult",
     "ScenePosition",
