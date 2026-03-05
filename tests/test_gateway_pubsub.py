@@ -182,6 +182,8 @@ def test_llm_actor_gateway_supports_stat_block_swarm_actor_profiles() -> None:
             description="A warted-nose goblin with one yellow eye",
             notable_traits=("scar over one eye", "twitchy ears"),
             actor_tags=("goblin", "skirmisher", "swarm"),
+            stat_block_name="Goblin",
+            stat_block_source="Monster Manual",
             stat_block_role="skirmisher",
             stat_block_challenge_rating="1/4",
             stat_block_max_hit_points=7,
@@ -208,6 +210,8 @@ def test_llm_actor_gateway_supports_stat_block_swarm_actor_profiles() -> None:
     assert "swarm" in presentation.tags
 
     stat_block = world.get_component(actor_entity, ActorStatBlock)
+    assert stat_block.stat_block_name == "Goblin"
+    assert stat_block.stat_block_source == "Monster Manual"
     assert stat_block.role == "skirmisher"
     assert stat_block.challenge_rating == "1/4"
     assert stat_block.max_hit_points == 7

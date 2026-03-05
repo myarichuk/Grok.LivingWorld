@@ -72,6 +72,8 @@ class LLMActorRegistrationCommand:
     description: str = ""
     notable_traits: tuple[str, ...] = ()
     actor_tags: tuple[str, ...] = ()
+    stat_block_name: str = ""
+    stat_block_source: str = ""
     stat_block_role: str = ""
     stat_block_challenge_rating: str = ""
     stat_block_max_hit_points: int = 1

@@ -76,6 +76,8 @@ class ActorPresentation:
 class ActorStatBlock:
     """Compact combat profile for swarm or lightweight actors."""
 
+    stat_block_name: str = ""
+    stat_block_source: str = ""
     role: str = ""
     challenge_rating: str = ""
     max_hit_points: int = 1

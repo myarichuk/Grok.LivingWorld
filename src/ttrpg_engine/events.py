@@ -27,6 +27,8 @@ class ActorRegisteredEvent:
     scene_zone: str = "default"
     scene_distance_bucket: str = "near"
     detail_mode: str = "full_profile"
+    stat_block_name: str = ""
+    stat_block_source: str = ""
     description: str = ""
     notable_traits: tuple[str, ...] = ()
     actor_tags: tuple[str, ...] = ()

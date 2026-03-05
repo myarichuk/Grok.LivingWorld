@@ -849,6 +849,8 @@ class LLMActorGatewaySystem:
                 ),
             )
             detail_mode = _parse_actor_detail_mode(command.detail_mode)
+            resolved_stat_block_name = ""
+            resolved_stat_block_source = ""
             world.add_component(
                 actor_entity,
                 ActorPresentation(
@@ -859,9 +861,15 @@ class LLMActorGatewaySystem:
             )
             if detail_mode is ActorDetailMode.STAT_BLOCK:
                 max_hp = max(1, int(command.stat_block_max_hit_points))
+                resolved_stat_block_name = (
+                    command.stat_block_name.strip() or command.actor_name
+                )
+                resolved_stat_block_source = command.stat_block_source.strip()
                 world.add_component(
                     actor_entity,
                     ActorStatBlock(
+                        stat_block_name=resolved_stat_block_name,
+                        stat_block_source=resolved_stat_block_source,
                         role=command.stat_block_role.strip(),
                         challenge_rating=command.stat_block_challenge_rating.strip(),
                         max_hit_points=max_hp,
@@ -913,6 +921,8 @@ class LLMActorGatewaySystem:
                     scene_zone=scene_zone,
                     scene_distance_bucket=distance_bucket.value,
                     detail_mode=detail_mode.value,
+                    stat_block_name=resolved_stat_block_name,
+                    stat_block_source=resolved_stat_block_source,
                     description=command.description.strip(),
                     notable_traits=_normalize_text_tags(command.notable_traits),
                     actor_tags=_normalize_text_tags(command.actor_tags),
