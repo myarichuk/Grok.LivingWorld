@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,13 @@ class LocationOccupancy:
     """Actor entity ids currently registered at this location."""
 
     actor_entity_ids: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class LocationIndex:
+    """Singleton map from scene ids to location entity ids."""
+
+    scene_to_entity_id: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

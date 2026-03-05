@@ -1,132 +1,124 @@
-# Grok Living World Engine (Survival Roguelike Draft)
+# Grok Living World Engine Design (Current + Next)
 
-## Assumptions
-- You want a **survival roguelike** where Grok is the fuzzy/creative layer and Python is the deterministic simulation layer.
-- Runtime is a long-lived Python 3.12 REPL session (same instance survives multiple turns).
-- Current repo is design-first; implementation files are not committed yet.
+## Current Runtime Reality
+- The codebase is implementation-first now (`src/ecs`, `src/ttrpg_engine`, `src/ttrpg_5e`, tests).
+- ECS world state is persisted via `WorldDB` append-only storage and rehydrated on startup.
+- Unified runtime flow exists (`scripts/grok_prepare_unified_runtime.py` -> `scripts/grok_unified_engine.py`).
+- Kernel turn phases are implemented (`IDLE`, `WAITING_FOR_LLM`, `RESOLVING`, `COMMITTED`).
+- LLM writes through command components and systems, never direct world mutation.
 
-## Missing Critical Context (using safe defaults)
-- Persistence backend preference (default recommendation: JSON snapshots first, optional SQLite later).
-- Target scale (single-player default, no multi-user lock model yet).
-- Replay strictness (default: deterministic RNG for all kernel decisions).
+## Existing Contracts to Preserve
+- Deterministic kernel owns time, turn progression, and authoritative state.
+- LLM is an untrusted suggestion layer; payloads are schema-validated before apply.
+- Requests are idempotent via `request_id` tracking in `RequestRegistry`.
+- ECS + WorldDB remain the persistence and query backbone.
 
-## Review of Your Updated Intention
-Your provided kernel/plugin draft is directionally correct and already close to a buildable v0:
-- The **Kernel/Plugin/LLM separation** is strong and should stay unchanged.
-- The **`NeedsLLMFill` pull model** is the right way to keep LLM generation bounded and auditable.
-- The **time chunk + volatility + interruption loop** is a good heartbeat for survival gameplay.
-- `body_status` and lazy inventory generation fit roguelike emergent storytelling.
+## NPC Lifecycle Model (New)
 
-## Two Implementation Paths (pick one)
+### NPC Residency Types
+- `transient` (travelers/commoners): short-lived scene occupants intended to churn.
+- `persistent` (named world actors): long-lived actors kept across scene/time transitions.
 
-### Option A (Default): Deterministic-first
-1. Implement kernel state machine + save/load + request idempotency.
-2. Keep `Plugin5e` as a temporary stub.
-3. Add Grok LLM fill points (`generate_location`, `batch_agendas`, `generate_interruption`, `generate_inventory`).
+### Required NPC Metadata
+- `residency_type`: `transient|persistent`
+- `spawn_turn_id`
+- `last_seen_turn_id`
+- `transient_timeout_turns` (only for transient)
+- `known_to_pc` (bool): whether the PC has meaningfully interacted and may see stable identity in narrative
+- `display_name`: optional when unknown; if `known_to_pc=false`, narrative can show role/description instead of true name
 
-**Trade-off:** Slightly slower first demo, but stable saves and easier debugging.
+### Cleanup Rules
+- At each turn commit, evaluate all transient NPCs in active and cached scenes.
+- Remove transient NPC from `LocationOccupancy` when:
+  - `current_turn - last_seen_turn_id >= transient_timeout_turns`, or
+  - scene capacity pressure requires eviction of lowest-priority transients.
+- Cleanup is soft-delete at gameplay level (out of scene), not hard delete from history.
 
-### Option B: Content-first
-1. Focus on location/NPC/inventory generation loops.
-2. Keep mechanics shallow and improve later.
+### Promotion Flow (Transient -> Persistent)
+- If PC interacts with a transient NPC, the engine must emit a structured interaction record.
+- LLM can decide to promote the NPC to persistent.
+- Promotion keeps same `actor_entity_id` and converts lifecycle metadata:
+  - `residency_type=persistent`
+  - `transient_timeout_turns=null`
+  - optional explicit `NarrativeActor.name` update
+  - optional faction/goal/relationship enrichment
 
-**Trade-off:** Faster wow-factor, but higher refactor risk when hardening saves/replay.
+## LLM Query and Registration Surface (New)
 
-## Updated Architecture Contract (inferred from your code)
+### Query Intents for LLM
+- `query_scene_actors`
+  - filters: `scene_id`, `residency_type`, `known_to_pc`, tags, distance bucket
+  - returns compact roster with stable ids and minimal relationship summary
+- `query_transient_interactions`
+  - filters: `turn_range`, `scene_id`, `pc_entity_id`
+  - returns transient NPCs recently interacted with and promotion candidates
+- `query_relationship_graph`
+  - filters: `actor_entity_id`, `bucket`, `depth`, relationship tags
+  - returns neighbor list/edges, optionally aggregated counts by bucket
 
-### 1) Hard boundary rules
-- **LLM may suggest text/data only**; it never mutates world state directly.
-- **Kernel is source of truth** for time, entity lifecycle, and persistence.
-- **Plugin owns math** (`resolve_action`, `roll_dice`, volatility model, equipment validation).
+### Registration/Mutation Intents for LLM
+- `register_npc`
+  - create actor + occupancy + lifecycle metadata in one command payload
+- `update_npc_lifecycle`
+  - update timeout, last_seen_turn_id, known_to_pc, tags
+- `promote_npc_to_persistent`
+  - allowed only for existing transient actor ids
+- `upsert_relationship_edge`
+  - create or update relationship edge (source, target, bucket, tags, score, rationale)
 
-### 2) Turn state machine (minimal)
-Track a phase in world state:
-- `IDLE`
-- `WAITING_FOR_LLM`
-- `RESOLVING`
-- `COMMITTED`
+## Relationship Model (New)
 
-This protects resume logic when a tool call is retried or duplicated.
+### Relationship Buckets
+- `hater`
+- `enemy`
+- `rival`
+- `acquaintance`
+- `friend`
+- `ally`
+- `trusted`
 
-### 3) LLM request envelope (recommended)
-Use one envelope shape for all fills:
-```json
-{
-  "needs_llm": true,
-  "request_id": "uuid",
-  "turn_id": 12,
-  "request_type": "generate_location",
-  "context": {},
-  "schema": {},
-  "schema_version": "1.0"
-}
-```
+### Edge Schema
+- `source_actor_entity_id`
+- `target_actor_entity_id`
+- `bucket` (enum above)
+- `score` (optional numeric refinement, e.g. -100..100)
+- `tags` (lightweight query handles, e.g. `debt`, `family`, `betrayal`, `mentor`, `romance`)
+- `last_updated_turn_id`
+- `visibility`: `private|rumor|public`
+- `known_to_pc` (whether PC should receive explicit narrative disclosure)
 
-Resume rules:
-- reject unknown `request_id`
-- reject already-applied `request_id`
-- validate payload keys/types before apply
+### Graph Storage + Persistence
+- Store relationship edges as ECS components/events and persist through `WorldDB` journal.
+- Keep denormalized query tags on edge payload to avoid expensive full scans.
+- Maintain both directional edges when needed (`A->B` and `B->A`) rather than inferring symmetry.
 
-### 4) Survival roguelike-specific data extensions
-Your current models are good; add these small fields when implementing:
-- `Actor`: `hunger`, `thirst`, `fatigue`, `temperature`, `infection_risk`
-- `Location`: `hazards`, `resource_nodes`, `weather_profile`
-- `Fact`: `confidence`, `created_minute`, `status` (`active|retracted|superseded`)
+## Efficient LLM Query Strategy
+- Index relationship terms/tags and scene ids in WorldDB documents.
+- Standardize tag prefixes for fast filtering:
+  - `rel_bucket:<bucket>`
+  - `rel_tag:<tag>`
+  - `actor:<id>`
+  - `scene:<scene_id>`
+  - `npc_type:transient|persistent`
+  - `known_to_pc:true|false`
+- Favor compact query responses (ids + buckets + key tags) and let LLM request expansion on demand.
 
-Keep them plugin-agnostic by storing as tags/stats dictionaries where possible.
+## Narrative Rules Tied to `known_to_pc`
+- If `known_to_pc=false`, narrative should default to role descriptors.
+- After interaction crossing a threshold, set `known_to_pc=true` and allow stable naming.
+- Promotion to persistent can happen before or after known status flips; they are related but not identical.
 
-### 5) Interrupt loop hardening
-Keep your existing flow and add:
-- kernel-seeded RNG for deterministic interruption selection
-- interruption cooldown floor to prevent spam chains
-- log tuple: `(turn_id, danger, candidates, selected)` for replay diagnosis
+## Required Eventing
+- Emit events for:
+  - transient timeout cleanup/removal
+  - transient interaction with PC (promotion candidate signal)
+  - promotion to persistent
+  - relationship edge upsert/bucket change
+- Persist these events via the existing ECS event journal path.
 
-### 6) Save/Load contract (new)
-Add `serialize_world()` and `deserialize_world()` with versioning.
-
-#### JSON snapshot (recommended first)
-```json
-{
-  "save_version": 1,
-  "world": {
-    "time_minutes": 180,
-    "current_location": "The Salty Wench",
-    "last_interrupt_time": 120,
-    "tension_cooldown": 30,
-    "phase": "COMMITTED",
-    "turn_id": 44,
-    "rng_seed": 1337,
-    "rng_draws": 92
-  },
-  "actors": [],
-  "locations": [],
-  "facts": [],
-  "next_uid": 1032,
-  "pending_llm": {}
-}
-```
-
-#### Deserialize requirements
-- fail loudly on missing required keys (`save_version`, `world`, `actors`, `locations`)
-- migrate older `save_version` before object construction
-- verify plugin compatibility (`api_version` / capability set)
-
-### 7) YAML support
-Support YAML only as an optional export/import format.
-Default runtime save format should remain JSON for deterministic and dependency-light behavior.
-
-## Minimal Build Plan (survival-focused)
-1. **M1:** Kernel models + deterministic RNG + `serialize_world`/`deserialize_world`.
-2. **M2:** `NeedsLLMFill` request registry (`request_id`, idempotent apply).
-3. **M3:** survival tick effects (hunger/thirst/fatigue) in plugin-neutral loop.
-4. **M4:** Grok-driven generation for location/NPC/inventory.
-5. **M5:** real rules plugin and combat injury consequences.
-
-## Backward Compatibility Note
-No runtime API exists in-repo yet, so this document is non-breaking.
-When code lands, freeze interfaces as `v0.1` and only add backward-compatible fields to save files; migrate everything else.
-
-## Security and Validation
-- Treat every LLM response as untrusted input.
-- Validate against explicit schema before apply.
-- Never log secrets/user identifiers in world snapshots.
+## Incremental Implementation Plan
+1. Add lifecycle components and timeout cleanup system.
+2. Add transient interaction event + promotion command/system.
+3. Add relationship edge component(s) + graph query system.
+4. Add LLM query/register request types and schema validation.
+5. Add persistence and rehydration tests for lifecycle and relationships.

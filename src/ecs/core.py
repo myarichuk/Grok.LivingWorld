@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import sys
 import tempfile
 import uuid
 import warnings
@@ -13,6 +14,7 @@ from enum import Enum
 from typing import Any, Protocol
 
 EntityId = int
+DEFAULT_WORLD_DB_NAME = "world.ecs.db"
 
 
 @dataclass(frozen=True)
@@ -122,9 +124,7 @@ class World:
         try:
             from ttrpg_engine.world_db import WorldDB
 
-            path = self.storage_path or os.path.join(
-                tempfile.gettempdir(), f"ecs-world-{uuid.uuid4().hex}.db"
-            )
+            path = self.storage_path or _default_world_storage_path()
             self.storage_path = path
             self._storage = WorldDB(path)
             self._load_from_storage()
@@ -208,6 +208,50 @@ class World:
         self._persist_component_delete(entity_id, component_type)
         self._version += 1
         return True
+
+    def remove_component_polymorphic(
+        self,
+        entity_id: EntityId,
+        component_type: type[Any],
+        *,
+        strict_single: bool = True,
+    ) -> int:
+        """Remove components matching ``component_type`` including subclasses.
+
+        Returns number of removed components.
+        When ``strict_single`` is true, multiple matches raise ``KeyError``.
+        """
+        matched_types: list[type[Any]] = []
+        for stored_type, entity_components in self._components.items():
+            if not issubclass(stored_type, component_type):
+                continue
+            if entity_id in entity_components:
+                matched_types.append(stored_type)
+
+        if not matched_types:
+            return 0
+        if strict_single and len(matched_types) > 1:
+            matched_names = ", ".join(sorted(tp.__name__ for tp in matched_types))
+            raise KeyError(
+                f"Entity {entity_id} has multiple components matching "
+                f"{component_type.__name__}: {matched_names}"
+            )
+
+        removed = 0
+        for matched_type in matched_types:
+            entity_components = self._components.get(matched_type)
+            if entity_components is None:
+                continue
+            if entity_components.pop(entity_id, None) is None:
+                continue
+            removed += 1
+            self._persist_component_delete(entity_id, matched_type)
+            if not entity_components:
+                del self._components[matched_type]
+
+        if removed:
+            self._version += 1
+        return removed
 
     def destroy_entity(self, entity_id: EntityId) -> None:
         removed_any = False
@@ -440,6 +484,29 @@ class World:
 
 def _component_storage_key(entity_id: EntityId, component_type_name: str) -> str:
     return f"ecs:component:{entity_id}:{component_type_name}"
+
+
+def _default_world_storage_path() -> str:
+    unified_runtime_dir = _unified_runtime_dir()
+    if unified_runtime_dir is not None:
+        unified_path = os.path.join(unified_runtime_dir, DEFAULT_WORLD_DB_NAME)
+        if os.path.exists(unified_path):
+            return unified_path
+        return unified_path
+
+    return os.path.join(tempfile.gettempdir(), f"ecs-world-{uuid.uuid4().hex}.db")
+
+
+def _unified_runtime_dir() -> str | None:
+    for module_name in ("grok_unified_engine", "__main__"):
+        module = sys.modules.get(module_name)
+        module_file = getattr(module, "__file__", None)
+        if not isinstance(module_file, str):
+            continue
+        if os.path.basename(module_file) != "grok_unified_engine.py":
+            continue
+        return os.path.dirname(os.path.abspath(module_file))
+    return None
 
 
 def _type_name(tp: type[Any]) -> str:

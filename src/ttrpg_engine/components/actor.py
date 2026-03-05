@@ -10,6 +10,85 @@ class ActorComponent:
     """Marker base class for actor-like components across systems."""
 
 
+class NpcResidencyType(str, Enum):
+    """Lifecycle category for NPC persistence and cleanup behavior."""
+
+    TRANSIENT = "transient"
+    PERSISTENT = "persistent"
+
+
+class ActorDetailMode(str, Enum):
+    """Data density mode for actor records."""
+
+    FULL_PROFILE = "full_profile"
+    STAT_BLOCK = "stat_block"
+
+
+@dataclass(frozen=True)
+class NpcLifecycle:
+    """Lifecycle and narrative-visibility metadata for NPCs."""
+
+    residency_type: NpcResidencyType = NpcResidencyType.PERSISTENT
+    spawn_turn_id: int = -1
+    last_seen_turn_id: int = -1
+    transient_timeout_turns: int = 6
+    known_to_pc: bool = False
+    tags: tuple[str, ...] = ()
+
+
+class RelationshipBucket(str, Enum):
+    """Coarse relationship category for graph queries and narrative tone."""
+
+    HATER = "hater"
+    ENEMY = "enemy"
+    RIVAL = "rival"
+    ACQUAINTANCE = "acquaintance"
+    FRIEND = "friend"
+    ALLY = "ally"
+    TRUSTED = "trusted"
+
+
+@dataclass(frozen=True)
+class RelationshipEdge:
+    """Directed relationship edge persisted in ECS storage."""
+
+    source_actor_entity_id: int
+    target_actor_entity_id: int
+    bucket: RelationshipBucket = RelationshipBucket.ACQUAINTANCE
+    score: int = 0
+    tags: tuple[str, ...] = ()
+    query_tags: tuple[str, ...] = ()
+    last_updated_turn_id: int = -1
+    visibility: str = "private"
+    known_to_pc: bool = False
+
+
+@dataclass(frozen=True)
+class ActorPresentation:
+    """Narrative-facing descriptors for varied non-gamey references."""
+
+    description: str = ""
+    notable_traits: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ActorStatBlock:
+    """Compact combat profile for swarm or lightweight actors."""
+
+    role: str = ""
+    challenge_rating: str = ""
+    max_hit_points: int = 1
+    current_hit_points: int = 1
+    armor_class: int = 10
+    speed: int = 30
+    attack_bonus: int = 0
+    damage_hint: str = ""
+    perception: int = 10
+    senses: tuple[str, ...] = ()
+    languages: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True)
 class NarrativeActor(ActorComponent):
     name: str

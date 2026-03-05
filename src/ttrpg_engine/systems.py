@@ -11,7 +11,10 @@ from ttrpg_engine.components import (
     ActionRecord,
     ActorAgency,
     ActorComponent,
+    ActorDetailMode,
     ActorImpulse,
+    ActorPresentation,
+    ActorStatBlock,
     CurrentAction,
     DistanceBucket,
     EndTurnCommand,
@@ -29,15 +32,26 @@ from ttrpg_engine.components import (
     LLMActorRegistrationCommand,
     LLMFactionUpdateCommand,
     LLMPlayerAgencyCommand,
+    LLMPromoteTransientNpcCommand,
+    LLMQueryTransientInteractionsCommand,
+    LLMRelationshipQueryCommand,
+    LLMRelationshipQueryResult,
+    LLMRelationshipUpsertCommand,
     LLMResponse,
+    LLMTransientInteractionQueryResult,
     Location,
+    LocationIndex,
     LocationOccupancy,
     LongTermGoals,
     MoveActorLocationCommand,
     NarrativeActor,
     NeedsLLMFill,
+    NpcLifecycle,
+    NpcResidencyType,
     PlayerActor,
     RegisterActorLocationCommand,
+    RelationshipBucket,
+    RelationshipEdge,
     RequestRegistry,
     ResolvedLLMResult,
     ScenePosition,
@@ -51,7 +65,10 @@ from ttrpg_engine.events import (
     ActorRegisteredEvent,
     EnvironmentImpulseEvent,
     FactionUpdatedEvent,
+    NpcPromotedEvent,
     PlayerActionEvent,
+    RelationshipEdgeUpdatedEvent,
+    TransientNpcInteractionEvent,
 )
 
 _DISTANCE_PRIORITY: dict[DistanceBucket, int] = {
@@ -831,6 +848,50 @@ class LLMActorGatewaySystem:
                     turn_id=current_turn,
                 ),
             )
+            detail_mode = _parse_actor_detail_mode(command.detail_mode)
+            world.add_component(
+                actor_entity,
+                ActorPresentation(
+                    description=command.description.strip(),
+                    notable_traits=_normalize_text_tags(command.notable_traits),
+                    tags=_normalize_text_tags(command.actor_tags),
+                ),
+            )
+            if detail_mode is ActorDetailMode.STAT_BLOCK:
+                max_hp = max(1, int(command.stat_block_max_hit_points))
+                world.add_component(
+                    actor_entity,
+                    ActorStatBlock(
+                        role=command.stat_block_role.strip(),
+                        challenge_rating=command.stat_block_challenge_rating.strip(),
+                        max_hit_points=max_hp,
+                        current_hit_points=max_hp,
+                        armor_class=max(1, int(command.stat_block_armor_class)),
+                        speed=max(0, int(command.stat_block_speed)),
+                        attack_bonus=int(command.stat_block_attack_bonus),
+                        damage_hint=command.stat_block_damage_hint.strip(),
+                        perception=max(0, int(command.stat_block_perception)),
+                        senses=_normalize_text_tags(command.stat_block_senses),
+                        languages=_normalize_text_tags(command.stat_block_languages),
+                    ),
+                )
+            residency_type = _parse_npc_residency_type(command.residency_type)
+            existing_spawn_turn = (
+                world.get_component(actor_entity, NpcLifecycle).spawn_turn_id
+                if world.has_component(actor_entity, NpcLifecycle)
+                else current_turn
+            )
+            world.add_component(
+                actor_entity,
+                NpcLifecycle(
+                    residency_type=residency_type,
+                    spawn_turn_id=existing_spawn_turn,
+                    last_seen_turn_id=current_turn,
+                    transient_timeout_turns=max(1, command.transient_timeout_turns),
+                    known_to_pc=bool(command.known_to_pc),
+                    tags=_normalize_text_tags(command.npc_tags),
+                ),
+            )
             _append_action_history(
                 world=world,
                 actor_entity=actor_entity,
@@ -851,6 +912,10 @@ class LLMActorGatewaySystem:
                     faction_relations=sanitized_relations,
                     scene_zone=scene_zone,
                     scene_distance_bucket=distance_bucket.value,
+                    detail_mode=detail_mode.value,
+                    description=command.description.strip(),
+                    notable_traits=_normalize_text_tags(command.notable_traits),
+                    actor_tags=_normalize_text_tags(command.actor_tags),
                 )
             )
             if from_scene and from_scene != command.scene_id:
@@ -889,6 +954,9 @@ class LLMActorGatewaySystem:
                     "scene_zone": scene_zone,
                     "scene_distance_bucket": distance_bucket.value,
                     "from_scene_id": from_scene,
+                    "npc_residency_type": residency_type.value,
+                    "known_to_pc": bool(command.known_to_pc),
+                    "detail_mode": detail_mode.value,
                 }
             )
 
@@ -1003,6 +1071,7 @@ class LLMPlayerAgencySystem:
         )
 
         applied: list[dict[str, object]] = []
+        transient_interactions: list[dict[str, object]] = []
         for command_entity in entities:
             command = world.get_component(command_entity, LLMPlayerAgencyCommand)
             if not world.has_component(command.player_entity_id, PlayerActor):
@@ -1037,6 +1106,46 @@ class LLMPlayerAgencySystem:
                     source=self.name,
                 )
             )
+
+            target_entity_id = command.target_entity_id
+            if (
+                target_entity_id is not None
+                and world.has_component(target_entity_id, NpcLifecycle)
+            ):
+                lifecycle = world.get_component(target_entity_id, NpcLifecycle)
+                if (
+                    _npc_residency_value(lifecycle.residency_type)
+                    == NpcResidencyType.TRANSIENT.value
+                ):
+                    scene_id = _get_actor_scene_id(world, target_entity_id)
+                    world.publish(
+                        TransientNpcInteractionEvent(
+                            player_entity_id=command.player_entity_id,
+                            npc_entity_id=target_entity_id,
+                            scene_id=scene_id,
+                            turn_id=current_turn,
+                            action=command.action,
+                            intent=command.intent,
+                            source=self.name,
+                        )
+                    )
+                    transient_interactions.append(
+                        {
+                            "npc_entity_id": target_entity_id,
+                            "scene_id": scene_id,
+                            "turn_id": current_turn,
+                            "action": command.action,
+                            "intent": command.intent,
+                        }
+                    )
+                    world.add_component(
+                        target_entity_id,
+                        replace(
+                            lifecycle,
+                            known_to_pc=True,
+                            last_seen_turn_id=current_turn,
+                        ),
+                    )
             world.remove_component(command_entity, LLMPlayerAgencyCommand)
             applied.append(
                 {
@@ -1046,7 +1155,481 @@ class LLMPlayerAgencySystem:
                 }
             )
 
-        return SystemResult(self.name, len(entities), {"applied": applied})
+        return SystemResult(
+            self.name,
+            len(entities),
+            {"applied": applied, "transient_interactions": transient_interactions},
+        )
+
+
+@dataclass
+class TransientNpcCleanupSystem:
+    """Remove timed-out transient NPCs from scene occupancy."""
+
+    name: str = "transient_npc_cleanup"
+    query: EntityQuery = EntityQuery(all_of=(KernelState,))
+
+    def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Clean transient NPC scene presence after timeout thresholds."""
+        if not entities:
+            return SystemResult(self.name, 0, {"cleaned": []})
+
+        current_turn = world.get_component(entities[0], KernelState).turn_id
+        cleaned: list[dict[str, object]] = []
+
+        actor_entities = world.query(EntityQuery(all_of=(NpcLifecycle, ScenePresence)))
+        for actor_entity in actor_entities:
+            lifecycle = world.get_component(actor_entity, NpcLifecycle)
+            if (
+                _npc_residency_value(lifecycle.residency_type)
+                != NpcResidencyType.TRANSIENT.value
+            ):
+                continue
+
+            timeout_turns = max(1, lifecycle.transient_timeout_turns)
+            if current_turn - lifecycle.last_seen_turn_id < timeout_turns:
+                continue
+
+            from_scene = _get_actor_scene_id(world, actor_entity)
+            if not from_scene:
+                continue
+
+            from_location_entity = _ensure_location_entity(world, from_scene)
+            occupancy = world.get_component(from_location_entity, LocationOccupancy)
+            world.add_component(
+                from_location_entity,
+                LocationOccupancy(
+                    actor_entity_ids=tuple(
+                        entity
+                        for entity in occupancy.actor_entity_ids
+                        if entity != actor_entity
+                    )
+                ),
+            )
+
+            world.remove_component(actor_entity, ScenePresence)
+            world.remove_component(actor_entity, ScenePosition)
+            world.publish(
+                ActorLocationChangedEvent(
+                    actor_entity_id=actor_entity,
+                    from_scene_id=from_scene,
+                    to_scene_id="",
+                    to_zone="",
+                    to_distance_bucket="",
+                    source=self.name,
+                )
+            )
+            cleaned.append(
+                {
+                    "actor_entity_id": actor_entity,
+                    "from_scene_id": from_scene,
+                    "timeout_turns": timeout_turns,
+                }
+            )
+
+        return SystemResult(self.name, len(entities), {"cleaned": cleaned})
+
+
+@dataclass
+class LLMPromoteTransientNpcSystem:
+    """Promote transient NPCs to persistent NPCs."""
+
+    name: str = "llm_promote_transient_npc"
+    query: EntityQuery = EntityQuery(all_of=(LLMPromoteTransientNpcCommand,))
+
+    def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Apply promotion commands on existing transient actors."""
+        promoted: list[dict[str, object]] = []
+        rejected: list[dict[str, object]] = []
+        turn_id = _current_turn(world)
+
+        for command_entity in entities:
+            command = world.get_component(command_entity, LLMPromoteTransientNpcCommand)
+            actor_entity = command.actor_entity_id
+            if not world.has_component(actor_entity, NpcLifecycle):
+                rejected.append(
+                    {
+                        "command_entity": command_entity,
+                        "actor_entity": actor_entity,
+                        "reason": "actor missing NpcLifecycle",
+                    }
+                )
+                world.remove_component(command_entity, LLMPromoteTransientNpcCommand)
+                continue
+
+            lifecycle = world.get_component(actor_entity, NpcLifecycle)
+            if (
+                _npc_residency_value(lifecycle.residency_type)
+                != NpcResidencyType.TRANSIENT.value
+            ):
+                rejected.append(
+                    {
+                        "command_entity": command_entity,
+                        "actor_entity": actor_entity,
+                        "reason": "actor is not transient",
+                    }
+                )
+                world.remove_component(command_entity, LLMPromoteTransientNpcCommand)
+                continue
+
+            promoted_name = command.promoted_name.strip()
+            if promoted_name and world.has_component(actor_entity, NarrativeActor):
+                narrative = world.get_component(actor_entity, NarrativeActor)
+                world.add_component(
+                    actor_entity,
+                    replace(narrative, name=promoted_name),
+                )
+
+            merged_tags = _normalize_text_tags(lifecycle.tags + command.tags_to_add)
+            world.add_component(
+                actor_entity,
+                replace(
+                    lifecycle,
+                    residency_type=NpcResidencyType.PERSISTENT,
+                    transient_timeout_turns=max(lifecycle.transient_timeout_turns, 1),
+                    known_to_pc=bool(command.known_to_pc),
+                    tags=merged_tags,
+                    last_seen_turn_id=turn_id,
+                ),
+            )
+            world.publish(
+                NpcPromotedEvent(
+                    actor_entity_id=actor_entity,
+                    promoted_name=promoted_name,
+                    turn_id=turn_id,
+                    source=self.name,
+                )
+            )
+            world.remove_component(command_entity, LLMPromoteTransientNpcCommand)
+            promoted.append(
+                {
+                    "command_entity": command_entity,
+                    "actor_entity": actor_entity,
+                    "promoted_name": promoted_name,
+                }
+            )
+
+        return SystemResult(
+            self.name, len(entities), {"promoted": promoted, "rejected": rejected}
+        )
+
+
+@dataclass
+class LLMTransientInteractionQuerySystem:
+    """Resolve transient-NPC interaction history queries for LLM."""
+
+    name: str = "llm_transient_interaction_query"
+    query: EntityQuery = EntityQuery(all_of=(LLMQueryTransientInteractionsCommand,))
+
+    def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Emit result components containing promotion candidates."""
+        results: list[dict[str, object]] = []
+        interactions = world.get_published_events(TransientNpcInteractionEvent)
+
+        for command_entity in entities:
+            command = world.get_component(
+                command_entity, LLMQueryTransientInteractionsCommand
+            )
+            candidates: list[dict[str, object]] = []
+            for event in interactions:
+                if command.pc_entity_id is not None and (
+                    event.player_entity_id != command.pc_entity_id
+                ):
+                    continue
+                if command.scene_id and event.scene_id != command.scene_id:
+                    continue
+                if command.turn_min >= 0 and event.turn_id < command.turn_min:
+                    continue
+                if command.turn_max >= 0 and event.turn_id > command.turn_max:
+                    continue
+                if not world.has_component(event.npc_entity_id, NpcLifecycle):
+                    continue
+                lifecycle = world.get_component(event.npc_entity_id, NpcLifecycle)
+                if (
+                    not command.include_already_known
+                    and lifecycle.known_to_pc
+                    and _npc_residency_value(lifecycle.residency_type)
+                    == NpcResidencyType.PERSISTENT.value
+                ):
+                    continue
+                candidates.append(
+                    {
+                        "npc_entity_id": event.npc_entity_id,
+                        "player_entity_id": event.player_entity_id,
+                        "scene_id": event.scene_id,
+                        "turn_id": event.turn_id,
+                        "action": event.action,
+                        "intent": event.intent,
+                        "known_to_pc": lifecycle.known_to_pc,
+                        "residency_type": _npc_residency_value(
+                            lifecycle.residency_type
+                        ),
+                        "tags": lifecycle.tags,
+                    }
+                )
+
+            result_entity = world.create_entity()
+            world.add_component(
+                result_entity,
+                LLMTransientInteractionQueryResult(
+                    command_entity_id=command_entity,
+                    candidates=tuple(candidates),
+                ),
+            )
+            world.remove_component(command_entity, LLMQueryTransientInteractionsCommand)
+            results.append(
+                {
+                    "command_entity": command_entity,
+                    "result_entity": result_entity,
+                    "candidate_count": len(candidates),
+                }
+            )
+
+        return SystemResult(self.name, len(entities), {"results": results})
+
+
+@dataclass
+class LLMRelationshipUpsertSystem:
+    """Create or update relationship graph edges."""
+
+    name: str = "llm_relationship_upsert"
+    query: EntityQuery = EntityQuery(all_of=(LLMRelationshipUpsertCommand,))
+
+    def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Upsert relationship edges and emit update events."""
+        upserted: list[dict[str, object]] = []
+        rejected: list[dict[str, object]] = []
+        turn_id = _current_turn(world)
+
+        for command_entity in entities:
+            command = world.get_component(command_entity, LLMRelationshipUpsertCommand)
+            source_entity = command.source_actor_entity_id
+            target_entity = command.target_actor_entity_id
+            if source_entity == target_entity:
+                rejected.append(
+                    {
+                        "command_entity": command_entity,
+                        "reason": "self-edge is not allowed",
+                    }
+                )
+                world.remove_component(command_entity, LLMRelationshipUpsertCommand)
+                continue
+
+            edge_entity = _find_relationship_edge_entity(
+                world=world,
+                source_actor_entity_id=source_entity,
+                target_actor_entity_id=target_entity,
+            )
+            if edge_entity is None:
+                edge_entity = world.create_entity()
+
+            bucket = _parse_relationship_bucket(command.bucket)
+            normalized_tags = _normalize_text_tags(command.tags)
+            score = max(-100, min(100, int(command.score)))
+            query_tags = _relationship_query_tags(
+                source_actor_entity_id=source_entity,
+                target_actor_entity_id=target_entity,
+                bucket=bucket,
+                tags=normalized_tags,
+            )
+            world.add_component(
+                edge_entity,
+                RelationshipEdge(
+                    source_actor_entity_id=source_entity,
+                    target_actor_entity_id=target_entity,
+                    bucket=bucket,
+                    score=score,
+                    tags=normalized_tags,
+                    query_tags=query_tags,
+                    last_updated_turn_id=turn_id,
+                    visibility=command.visibility.strip() or "private",
+                    known_to_pc=bool(command.known_to_pc),
+                ),
+            )
+            world.publish(
+                RelationshipEdgeUpdatedEvent(
+                    source_actor_entity_id=source_entity,
+                    target_actor_entity_id=target_entity,
+                    bucket=bucket.value,
+                    score=score,
+                    tags=normalized_tags,
+                    turn_id=turn_id,
+                    source=self.name,
+                )
+            )
+            world.remove_component(command_entity, LLMRelationshipUpsertCommand)
+            upserted.append(
+                {
+                    "command_entity": command_entity,
+                    "edge_entity": edge_entity,
+                    "bucket": bucket.value,
+                }
+            )
+
+        return SystemResult(
+            self.name, len(entities), {"upserted": upserted, "rejected": rejected}
+        )
+
+
+@dataclass
+class LLMRelationshipQuerySystem:
+    """Query relationship edges by actor and optional filters."""
+
+    name: str = "llm_relationship_query"
+    query: EntityQuery = EntityQuery(all_of=(LLMRelationshipQueryCommand,))
+
+    def run(self, world: World, entities: list[EntityId]) -> SystemResult:
+        """Emit result components containing matching relationship edges."""
+        results: list[dict[str, object]] = []
+
+        for command_entity in entities:
+            command = world.get_component(command_entity, LLMRelationshipQueryCommand)
+            bucket_filter = _parse_relationship_bucket(command.bucket)
+            requested_bucket = command.bucket.strip().lower()
+            requested_tag = command.tag.strip().lower()
+
+            edges: list[dict[str, object]] = []
+            for edge_entity in world.query(EntityQuery(all_of=(RelationshipEdge,))):
+                edge = world.get_component(edge_entity, RelationshipEdge)
+                include = False
+                if command.include_outgoing and (
+                    edge.source_actor_entity_id == command.actor_entity_id
+                ):
+                    include = True
+                if command.include_incoming and (
+                    edge.target_actor_entity_id == command.actor_entity_id
+                ):
+                    include = True
+                if not include:
+                    continue
+                if requested_bucket and (
+                    _relationship_bucket_value(edge.bucket) != bucket_filter.value
+                ):
+                    continue
+                if requested_tag and requested_tag not in edge.tags:
+                    continue
+                edges.append(
+                    {
+                        "edge_entity_id": edge_entity,
+                        "source_actor_entity_id": edge.source_actor_entity_id,
+                        "target_actor_entity_id": edge.target_actor_entity_id,
+                        "bucket": _relationship_bucket_value(edge.bucket),
+                        "score": edge.score,
+                        "tags": edge.tags,
+                        "query_tags": edge.query_tags,
+                        "known_to_pc": edge.known_to_pc,
+                        "visibility": edge.visibility,
+                        "last_updated_turn_id": edge.last_updated_turn_id,
+                    }
+                )
+
+            result_entity = world.create_entity()
+            world.add_component(
+                result_entity,
+                LLMRelationshipQueryResult(
+                    command_entity_id=command_entity,
+                    edges=tuple(edges),
+                ),
+            )
+            world.remove_component(command_entity, LLMRelationshipQueryCommand)
+            results.append(
+                {
+                    "command_entity": command_entity,
+                    "result_entity": result_entity,
+                    "edge_count": len(edges),
+                }
+            )
+
+        return SystemResult(self.name, len(entities), {"results": results})
+
+
+def _current_turn(world: World) -> int:
+    kernels = world.query(EntityQuery(all_of=(KernelState,)))
+    if not kernels:
+        return -1
+    return world.get_component(kernels[0], KernelState).turn_id
+
+
+def _touch_npc_last_seen(world: World, actor_entity: int) -> None:
+    """Update NPC last-seen marker when the actor is placed into a scene."""
+    if not world.has_component(actor_entity, NpcLifecycle):
+        return
+    lifecycle = world.get_component(actor_entity, NpcLifecycle)
+    world.add_component(
+        actor_entity,
+        replace(lifecycle, last_seen_turn_id=_current_turn(world)),
+    )
+
+
+def _normalize_text_tags(tags: tuple[str, ...]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for tag in tags:
+        cleaned = tag.strip().lower()
+        if cleaned and cleaned not in normalized:
+            normalized.append(cleaned)
+    return tuple(normalized)
+
+
+def _parse_npc_residency_type(value: str) -> NpcResidencyType:
+    normalized = value.strip().lower()
+    if normalized == NpcResidencyType.TRANSIENT.value:
+        return NpcResidencyType.TRANSIENT
+    return NpcResidencyType.PERSISTENT
+
+
+def _parse_actor_detail_mode(value: str) -> ActorDetailMode:
+    normalized = value.strip().lower()
+    if normalized == ActorDetailMode.STAT_BLOCK.value:
+        return ActorDetailMode.STAT_BLOCK
+    return ActorDetailMode.FULL_PROFILE
+
+
+def _npc_residency_value(value: NpcResidencyType | str) -> str:
+    if isinstance(value, NpcResidencyType):
+        return value.value
+    return str(value).strip().lower()
+
+
+def _parse_relationship_bucket(value: str) -> RelationshipBucket:
+    normalized = value.strip().lower()
+    for bucket in RelationshipBucket:
+        if bucket.value == normalized:
+            return bucket
+    return RelationshipBucket.ACQUAINTANCE
+
+
+def _relationship_bucket_value(value: RelationshipBucket | str) -> str:
+    if isinstance(value, RelationshipBucket):
+        return value.value
+    return str(value).strip().lower()
+
+
+def _find_relationship_edge_entity(
+    world: World, source_actor_entity_id: int, target_actor_entity_id: int
+) -> int | None:
+    for edge_entity in world.query(EntityQuery(all_of=(RelationshipEdge,))):
+        edge = world.get_component(edge_entity, RelationshipEdge)
+        if (
+            edge.source_actor_entity_id == source_actor_entity_id
+            and edge.target_actor_entity_id == target_actor_entity_id
+        ):
+            return edge_entity
+    return None
+
+
+def _relationship_query_tags(
+    source_actor_entity_id: int,
+    target_actor_entity_id: int,
+    bucket: RelationshipBucket,
+    tags: tuple[str, ...],
+) -> tuple[str, ...]:
+    query_tags = [
+        f"rel_bucket:{bucket.value}",
+        f"actor:{source_actor_entity_id}",
+        f"actor:{target_actor_entity_id}",
+    ]
+    query_tags.extend(f"rel_tag:{tag}" for tag in tags)
+    return _normalize_text_tags(tuple(query_tags))
 
 
 def _next_request_id(turn_id: int, request_type: str, existing_ids: set[str]) -> str:
@@ -1182,16 +1765,52 @@ def _get_actor_scene_id(world: World, actor_entity: int) -> str:
 
 
 def _ensure_location_entity(world: World, scene_id: str) -> int:
-    """Get or create location entity for a scene id."""
+    """Get or create location entity for a scene id using an O(1) index map."""
+    index_entity, index = _get_or_create_location_index(world)
+    mapped_entity = index.scene_to_entity_id.get(scene_id)
+    if mapped_entity is not None and world.has_component(mapped_entity, Location):
+        mapped_location = world.get_component(mapped_entity, Location)
+        if mapped_location.scene_id == scene_id:
+            return mapped_entity
+
+    # Fallback for worlds created before index introduction or stale mappings.
     for entity in world.query(EntityQuery(all_of=(Location,))):
         location = world.get_component(entity, Location)
         if location.scene_id == scene_id:
+            _set_location_index(world, index_entity, index, scene_id, entity)
             return entity
 
     entity = world.create_entity()
     world.add_component(entity, Location(scene_id=scene_id))
     world.add_component(entity, LocationOccupancy())
+    _set_location_index(world, index_entity, index, scene_id, entity)
     return entity
+
+
+def _get_or_create_location_index(world: World) -> tuple[int, LocationIndex]:
+    """Return singleton location index entity and component."""
+    entities = world.query(EntityQuery(all_of=(LocationIndex,)))
+    if entities:
+        entity = entities[0]
+        return entity, world.get_component(entity, LocationIndex)
+
+    entity = world.create_entity()
+    index = LocationIndex()
+    world.add_component(entity, index)
+    return entity, index
+
+
+def _set_location_index(
+    world: World,
+    index_entity: int,
+    index: LocationIndex,
+    scene_id: str,
+    location_entity_id: int,
+) -> None:
+    """Update scene->location mapping in immutable component style."""
+    next_mapping = dict(index.scene_to_entity_id)
+    next_mapping[scene_id] = location_entity_id
+    world.add_component(index_entity, LocationIndex(scene_to_entity_id=next_mapping))
 
 
 def _assign_actor_location(
@@ -1237,6 +1856,7 @@ def _assign_actor_location(
             distance_bucket=distance_bucket,
         ),
     )
+    _touch_npc_last_seen(world, actor_entity)
     return from_scene
 
 

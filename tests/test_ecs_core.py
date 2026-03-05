@@ -109,6 +109,62 @@ def test_remove_component_deletes_entity_component_mapping() -> None:
     assert world.has_component(entity, Health) is False
 
 
+def test_remove_component_polymorphic_removes_single_subclass_match() -> None:
+    world = World(enable_storage=False)
+
+    class NpcActor(ActorComponent):
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    entity = world.create_entity()
+    world.add_component(entity, NpcActor("Rurik"))
+
+    removed_count = world.remove_component_polymorphic(entity, ActorComponent)
+
+    assert removed_count == 1
+    assert world.has_component(entity, ActorComponent) is False
+
+
+def test_remove_component_polymorphic_raises_on_ambiguous_match() -> None:
+    world = World(enable_storage=False)
+
+    class NpcActor(ActorComponent):
+        pass
+
+    class PlayerAvatar(ActorComponent):
+        pass
+
+    entity = world.create_entity()
+    world.add_component(entity, NpcActor())
+    world.add_component(entity, PlayerAvatar())
+
+    with pytest.raises(KeyError, match="multiple components matching ActorComponent"):
+        world.remove_component_polymorphic(entity, ActorComponent)
+
+
+def test_remove_component_polymorphic_can_remove_all_when_non_strict() -> None:
+    world = World(enable_storage=False)
+
+    class NpcActor(ActorComponent):
+        pass
+
+    class PlayerAvatar(ActorComponent):
+        pass
+
+    entity = world.create_entity()
+    world.add_component(entity, NpcActor())
+    world.add_component(entity, PlayerAvatar())
+
+    removed_count = world.remove_component_polymorphic(
+        entity,
+        ActorComponent,
+        strict_single=False,
+    )
+
+    assert removed_count == 2
+    assert world.has_component(entity, ActorComponent) is False
+
+
 def test_destroy_entity_removes_all_components() -> None:
     world = World()
     entity = world.create_entity()

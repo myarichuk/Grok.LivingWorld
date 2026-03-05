@@ -33,8 +33,8 @@ class WorldDB:
     """Append-only document store for world state snapshots and events.
 
     Storage format is newline-delimited JSON where each append writes exactly one
-    document line. The database keeps in-memory indexes for fast term search and
-    key lookup, and stores byte offsets to re-read specific docs from mmap.
+    document line. The database keeps a full in-memory cache of documents and
+    indexes for fast search, and uses an append-only file for persistence.
     """
 
     def __init__(self, path: str = "world.db") -> None:
@@ -119,10 +119,13 @@ class WorldDB:
             return
 
         self._fh.seek(0)
-        raw = self._fh.read()
         cursor = 0
 
-        for line in raw.splitlines(keepends=True):
+        while True:
+            line = self._fh.readline()
+            if not line:
+                break
+
             start = cursor
             cursor += len(line)
             stripped = line.strip()
@@ -354,6 +357,7 @@ class WorldDB:
                 line = json.dumps(storage_doc, ensure_ascii=False) + "\n"
                 out.write(line.encode("utf-8"))
 
+        self.close()
         os.replace(tmp_path, self.path)
         self._open_storage()
         self._rebuild_from_file()
@@ -513,7 +517,7 @@ class WorldDB:
             self._apply_doc(key, doc)
 
         self._next_id = max(1, next_id)
-        self._dirty = False
+        self.compact()
         return len(docs)
 
     def stats(self) -> dict[str, int]:

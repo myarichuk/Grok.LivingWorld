@@ -26,6 +26,10 @@ class ActorRegisteredEvent:
     faction_relations: dict[str, int]
     scene_zone: str = "default"
     scene_distance_bucket: str = "near"
+    detail_mode: str = "full_profile"
+    description: str = ""
+    notable_traits: tuple[str, ...] = ()
+    actor_tags: tuple[str, ...] = ()
     source: str = "llm_gateway"
 
 
@@ -66,4 +70,34 @@ class EnvironmentImpulseEvent:
     zone: str
     distance_bucket: str
     summary: str
+    source: str
+
+
+@dataclass(frozen=True)
+class TransientNpcInteractionEvent:
+    player_entity_id: int
+    npc_entity_id: int
+    scene_id: str
+    turn_id: int
+    action: str
+    intent: str
+    source: str
+
+
+@dataclass(frozen=True)
+class NpcPromotedEvent:
+    actor_entity_id: int
+    promoted_name: str
+    turn_id: int
+    source: str
+
+
+@dataclass(frozen=True)
+class RelationshipEdgeUpdatedEvent:
+    source_actor_entity_id: int
+    target_actor_entity_id: int
+    bucket: str
+    score: int
+    tags: tuple[str, ...]
+    turn_id: int
     source: str

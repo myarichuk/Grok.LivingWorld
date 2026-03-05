@@ -6,6 +6,7 @@ from ttrpg_engine.components import (
     DistanceBucket,
     KernelState,
     Location,
+    LocationIndex,
     LocationOccupancy,
     MoveActorLocationCommand,
     PlayerActor,
@@ -56,6 +57,9 @@ def test_location_registration_creates_location_and_occupancy() -> None:
     position = world.get_component(actor, ScenePosition)
     assert position.zone == "warehouse_row"
     assert position.distance_bucket is DistanceBucket.CLOSE
+    index_entity = world.query(EntityQuery(all_of=(LocationIndex,)))[0]
+    index = world.get_component(index_entity, LocationIndex)
+    assert index.scene_to_entity_id["docks"] == docks
 
 
 def test_actor_location_change_updates_occupancy_and_player_kernel_location() -> None:
@@ -120,3 +124,8 @@ def test_actor_location_change_updates_occupancy_and_player_kernel_location() ->
     assert events[0].to_scene_id == "tavern"
     assert events[0].to_zone == "main_hall"
     assert events[0].to_distance_bucket == "engaged"
+
+    index_entity = world.query(EntityQuery(all_of=(LocationIndex,)))[0]
+    index = world.get_component(index_entity, LocationIndex)
+    assert index.scene_to_entity_id["docks"] == docks
+    assert index.scene_to_entity_id["tavern"] == tavern

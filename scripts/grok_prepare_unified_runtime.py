@@ -193,7 +193,11 @@ def main() -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(output, encoding="utf-8")
 
+    placeholder_db_path = output_path.parent / "world.ecs.db"
+    placeholder_db_path.touch(exist_ok=True)
+
     print(f"unified_path={output_path}")
+    print(f"placeholder_db={placeholder_db_path}")
     print(f"module_count={len(modules)}")
     return 0
 

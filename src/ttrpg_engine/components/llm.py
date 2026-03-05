@@ -64,6 +64,24 @@ class LLMActorRegistrationCommand:
     current_action: str = ""
     turns_since_last_impulse: int | None = None
     min_turns_between_impulses: int = 1
+    residency_type: str = "persistent"
+    known_to_pc: bool = False
+    transient_timeout_turns: int = 6
+    npc_tags: tuple[str, ...] = ()
+    detail_mode: str = "full_profile"
+    description: str = ""
+    notable_traits: tuple[str, ...] = ()
+    actor_tags: tuple[str, ...] = ()
+    stat_block_role: str = ""
+    stat_block_challenge_rating: str = ""
+    stat_block_max_hit_points: int = 1
+    stat_block_armor_class: int = 10
+    stat_block_speed: int = 30
+    stat_block_attack_bonus: int = 0
+    stat_block_damage_hint: str = ""
+    stat_block_perception: int = 10
+    stat_block_senses: tuple[str, ...] = ()
+    stat_block_languages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -90,3 +108,64 @@ class LLMPlayerAgencyCommand:
     action: str
     intent: str = ""
     target_entity_id: int | None = None
+
+
+@dataclass(frozen=True)
+class LLMPromoteTransientNpcCommand:
+    """Promote a transient NPC into persistent world state."""
+
+    actor_entity_id: int
+    promoted_name: str = ""
+    known_to_pc: bool = True
+    tags_to_add: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class LLMQueryTransientInteractionsCommand:
+    """Query transient NPC interaction history for promotion decisions."""
+
+    pc_entity_id: int | None = None
+    scene_id: str = ""
+    turn_min: int = -1
+    turn_max: int = -1
+    include_already_known: bool = True
+
+
+@dataclass(frozen=True)
+class LLMTransientInteractionQueryResult:
+    """Result payload for transient-interaction query command."""
+
+    command_entity_id: int
+    candidates: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class LLMRelationshipUpsertCommand:
+    """Create or update one directed relationship edge."""
+
+    source_actor_entity_id: int
+    target_actor_entity_id: int
+    bucket: str
+    score: int = 0
+    tags: tuple[str, ...] = ()
+    visibility: str = "private"
+    known_to_pc: bool = False
+
+
+@dataclass(frozen=True)
+class LLMRelationshipQueryCommand:
+    """Query relationship graph edges by actor/bucket/tag filters."""
+
+    actor_entity_id: int
+    bucket: str = ""
+    tag: str = ""
+    include_outgoing: bool = True
+    include_incoming: bool = True
+
+
+@dataclass(frozen=True)
+class LLMRelationshipQueryResult:
+    """Result payload for relationship graph query command."""
+
+    command_entity_id: int
+    edges: tuple[dict[str, Any], ...]

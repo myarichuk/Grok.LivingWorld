@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 
 from ecs.core import World
@@ -97,6 +99,35 @@ def test_world_rehydrates_state_from_world_db(tmp_path: Path) -> None:
     assert len(loaded_events) == 1
     assert isinstance(loaded_events[0], ActorImpulseEvent)
     world_b.close()
+
+
+def test_world_defaults_to_unified_runtime_world_db(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_path = tmp_path / "grok_unified_engine.py"
+    runtime_path.write_text("# runtime placeholder\n", encoding="utf-8")
+    runtime_module = types.ModuleType("grok_unified_engine")
+    runtime_module.__file__ = str(runtime_path)
+    monkeypatch.setitem(sys.modules, "grok_unified_engine", runtime_module)
+
+    world = World()
+    assert world.storage_path == str(tmp_path / "world.ecs.db")
+    world.close()
+
+
+def test_world_reuses_existing_unified_runtime_world_db(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_path = tmp_path / "grok_unified_engine.py"
+    runtime_path.write_text("# runtime placeholder\n", encoding="utf-8")
+    (tmp_path / "world.ecs.db").touch()
+    runtime_module = types.ModuleType("grok_unified_engine")
+    runtime_module.__file__ = str(runtime_path)
+    monkeypatch.setitem(sys.modules, "grok_unified_engine", runtime_module)
+
+    world = World()
+    assert world.storage_path == str(tmp_path / "world.ecs.db")
+    world.close()
 
 
 class _MockStorage:
