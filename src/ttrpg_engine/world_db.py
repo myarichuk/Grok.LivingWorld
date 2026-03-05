@@ -42,6 +42,7 @@ class WorldDB:
         self._index: dict[str, list[str]] = defaultdict(list)
         self._turn_index: dict[int, list[str]] = defaultdict(list)
         self._scene_index: dict[str, list[str]] = defaultdict(list)
+        self._faction_index: dict[str, list[str]] = defaultdict(list)
         self._data: dict[str, dict[str, Any]] = {}
         self._offsets: dict[str, tuple[int, int]] = {}
         self._tombstones: set[str] = set()
@@ -110,6 +111,7 @@ class WorldDB:
         self._index.clear()
         self._turn_index.clear()
         self._scene_index.clear()
+        self._faction_index.clear()
         self._data.clear()
         self._offsets.clear()
         self._tombstones.clear()
@@ -187,6 +189,9 @@ class WorldDB:
         scene_id = _scene_id_key(doc)
         if scene_id:
             _insert_sorted_unique(self._scene_index[scene_id], key)
+        faction_entity_id = _faction_entity_id_key(doc)
+        if faction_entity_id:
+            _insert_sorted_unique(self._faction_index[faction_entity_id], key)
 
     def _deindex_key(self, key: str, doc: dict[str, Any]) -> None:
         for term in self._doc_terms(doc):
@@ -203,6 +208,11 @@ class WorldDB:
             scene_keys = self._scene_index.get(scene_id)
             if scene_keys is not None:
                 _remove_sorted(scene_keys, key)
+        faction_entity_id = _faction_entity_id_key(doc)
+        if faction_entity_id:
+            faction_keys = self._faction_index.get(faction_entity_id)
+            if faction_keys is not None:
+                _remove_sorted(faction_keys, key)
 
     def _is_tombstone(self, doc: dict[str, Any]) -> bool:
         return bool(doc.get("tombstone"))
@@ -455,8 +465,9 @@ class WorldDB:
         turn_max: int,
         scene_id: str | None = None,
         limit: int = 100,
+        faction_entity_id: str | int | None = None,
     ) -> list[dict[str, Any]]:
-        """Return docs in a turn range, optionally filtered by scene id."""
+        """Return docs in a turn range, optionally filtered by scene/faction."""
         if turn_min > turn_max:
             return []
 
@@ -467,7 +478,28 @@ class WorldDB:
         if scene_id is not None:
             scene_keys = set(self._scene_index.get(scene_id, []))
             keys &= scene_keys
+        if faction_entity_id is not None:
+            normalized_faction = str(faction_entity_id).strip()
+            if normalized_faction:
+                faction_keys = set(self._faction_index.get(normalized_faction, []))
+                keys &= faction_keys
 
+        docs = [
+            self._data[key]
+            for key in keys
+            if key in self._data and key not in self._tombstones
+        ]
+        docs.sort(key=lambda doc: (_turn_sort_key(doc), str(doc.get("id", ""))))
+        return docs[: max(0, limit)]
+
+    def query_by_faction(
+        self, faction_entity_id: str | int, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return docs indexed under a faction id sorted by turn ascending."""
+        normalized_faction = str(faction_entity_id).strip()
+        if not normalized_faction:
+            return []
+        keys = set(self._faction_index.get(normalized_faction, []))
         docs = [
             self._data[key]
             for key in keys
@@ -504,6 +536,7 @@ class WorldDB:
         self._index.clear()
         self._turn_index.clear()
         self._scene_index.clear()
+        self._faction_index.clear()
         self._data.clear()
         self._offsets.clear()
         self._tombstones.clear()
@@ -531,6 +564,7 @@ class WorldDB:
             "indexed_terms": len(self._index),
             "turn_buckets": len(self._turn_index),
             "scene_buckets": len(self._scene_index),
+            "faction_buckets": len(self._faction_index),
             "corrupt_lines": self._corrupt_lines,
             "tombstones": len(self._tombstones),
         }
@@ -570,3 +604,11 @@ def _scene_id_key(doc: dict[str, Any]) -> str:
     if isinstance(scene_id, str):
         return scene_id
     return ""
+
+
+def _faction_entity_id_key(doc: dict[str, Any]) -> str:
+    faction_entity_id = doc.get("faction_entity_id")
+    if faction_entity_id is None:
+        return ""
+    normalized = str(faction_entity_id).strip()
+    return normalized

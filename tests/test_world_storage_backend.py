@@ -130,6 +130,20 @@ def test_world_reuses_existing_unified_runtime_world_db(
     world.close()
 
 
+def test_world_uses_env_world_db_path(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "env-world.ecs.db"
+    monkeypatch.setenv("ECS_WORLD_DB_PATH", str(db_path))
+
+    world = World()
+    assert world.storage_path == str(db_path)
+    entity = world.create_entity()
+    world.add_component(entity, KernelState(turn_id=1))
+    world.close()
+
+    with WorldDB(str(db_path)) as db:
+        assert db.stats()["doc_count"] >= 1
+
+
 class _MockStorage:
     def __init__(self) -> None:
         self.docs: list[dict[str, object]] = []

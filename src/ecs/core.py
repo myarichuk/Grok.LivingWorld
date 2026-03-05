@@ -15,6 +15,7 @@ from typing import Any, Protocol
 
 EntityId = int
 DEFAULT_WORLD_DB_NAME = "world.ecs.db"
+WORLD_DB_ENV_VAR = "ECS_WORLD_DB_PATH"
 
 
 @dataclass(frozen=True)
@@ -487,6 +488,10 @@ def _component_storage_key(entity_id: EntityId, component_type_name: str) -> str
 
 
 def _default_world_storage_path() -> str:
+    env_path = os.environ.get(WORLD_DB_ENV_VAR, "").strip()
+    if env_path:
+        return env_path
+
     unified_runtime_dir = _unified_runtime_dir()
     if unified_runtime_dir is not None:
         unified_path = os.path.join(unified_runtime_dir, DEFAULT_WORLD_DB_NAME)

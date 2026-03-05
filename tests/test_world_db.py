@@ -174,6 +174,54 @@ def test_world_db_turn_range_query_with_scene_filter(tmp_path: Path) -> None:
         assert [row["id"] for row in any_rows] == ["a", "b", "c"]
 
 
+def test_world_db_faction_index_query_and_turn_range_intersection(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "world.db"
+    with WorldDB(str(db_path)) as db:
+        db.append_batch(
+            [
+                {
+                    "id": "a",
+                    "turn": 10,
+                    "scene_id": "dock",
+                    "faction_entity_id": 1,
+                    "event": "watch shift",
+                },
+                {
+                    "id": "b",
+                    "turn": 11,
+                    "scene_id": "dock",
+                    "faction_entity_id": 1,
+                    "event": "ship arrives",
+                },
+                {
+                    "id": "c",
+                    "turn": 11,
+                    "scene_id": "tavern",
+                    "faction_entity_id": 2,
+                    "event": "song starts",
+                },
+                {
+                    "id": "d",
+                    "turn": 12,
+                    "scene_id": "dock",
+                    "faction_entity_id": 2,
+                    "event": "cargo moved",
+                },
+            ]
+        )
+
+        faction_one_rows = db.query_by_faction(1)
+        assert [row["id"] for row in faction_one_rows] == ["a", "b"]
+
+        filtered_rows = db.query_turn_range(
+            10, 12, scene_id="dock", faction_entity_id=2
+        )
+        assert [row["id"] for row in filtered_rows] == ["d"]
+        assert db.stats()["faction_buckets"] == 2
+
+
 def test_world_db_skips_corrupt_lines(tmp_path: Path) -> None:
     db_path = tmp_path / "world.db"
     db_path.write_bytes(
