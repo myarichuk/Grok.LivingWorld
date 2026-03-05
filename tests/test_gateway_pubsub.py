@@ -4,6 +4,9 @@ from ecs.core import EntityQuery, World
 from ttrpg_engine.components import (
     ActionHistory,
     ActorAgency,
+    ActorDetailMode,
+    ActorPresentation,
+    ActorStatBlock,
     CurrentAction,
     Faction,
     FactionFlags,
@@ -155,3 +158,59 @@ def test_world_pubsub_supports_environment_impulse_event() -> None:
     world.publish(event)
 
     assert seen == [event]
+
+
+def test_llm_actor_gateway_supports_stat_block_swarm_actor_profiles() -> None:
+    world = World()
+    kernel = world.create_entity()
+    world.add_component(
+        kernel,
+        KernelState(phase=TurnPhase.RESOLVING, turn_id=3, current_location="tavern"),
+    )
+
+    command_entity = world.create_entity()
+    world.add_component(
+        command_entity,
+        LLMActorRegistrationCommand(
+            actor_name="Goblin Skirmisher #4",
+            actor_kind="monster",
+            scene_id="tavern",
+            scene_zone="main_room",
+            long_term_goals=("harass intruders",),
+            faction_relations={},
+            detail_mode="stat_block",
+            description="A warted-nose goblin with one yellow eye",
+            notable_traits=("scar over one eye", "twitchy ears"),
+            actor_tags=("goblin", "skirmisher", "swarm"),
+            stat_block_role="skirmisher",
+            stat_block_challenge_rating="1/4",
+            stat_block_max_hit_points=7,
+            stat_block_armor_class=15,
+            stat_block_speed=30,
+            stat_block_attack_bonus=4,
+            stat_block_damage_hint="scimitar 1d6+2",
+            stat_block_perception=9,
+            stat_block_senses=("darkvision",),
+            stat_block_languages=("common", "goblin"),
+        ),
+    )
+
+    result = LLMActorGatewaySystem().run(world, [command_entity])
+    actor_entity = result.payload["registered"][0]["actor_entity"]
+    assert (
+        result.payload["registered"][0]["detail_mode"]
+        == ActorDetailMode.STAT_BLOCK.value
+    )
+
+    presentation = world.get_component(actor_entity, ActorPresentation)
+    assert "warted-nose goblin" in presentation.description
+    assert "scar over one eye" in presentation.notable_traits
+    assert "swarm" in presentation.tags
+
+    stat_block = world.get_component(actor_entity, ActorStatBlock)
+    assert stat_block.role == "skirmisher"
+    assert stat_block.challenge_rating == "1/4"
+    assert stat_block.max_hit_points == 7
+    assert stat_block.current_hit_points == 7
+    assert stat_block.armor_class == 15
+    assert stat_block.attack_bonus == 4
