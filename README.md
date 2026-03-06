@@ -1,218 +1,78 @@
-# ECS + TTRPG Engine
+# Grok's Living World Toolset
 
-Generic ECS primitives separated from TTRPG domain implementations.
+This is a little toolkit to help you (Grok) run a persistent TTRPG world. It's basically a memory bank and a dice roller so you don't have to hallucinate the plot or the math.
 
-## Structure
+It's all contained in `grok_world.py` for easy loading.
 
-- `src/ecs/` - generic ECS core (`World`, `GlobalSystem`, `SystemResult`).
-- `src/ttrpg_engine/` - deterministic game-loop state machine, actor agency, LLM gateway.
-  - `components/kernel.py` - turn + kernel state
-  - `components/llm.py` - LLM command/response components
-  - `components/actor.py` - actor markers, agency, goals, faction relations
-  - `events.py` - pub/sub event types
-- `src/ttrpg_5e/` - D&D 5e actor components plus actor factory abstraction.
-- `tests/` - unit tests for ECS core, 5e factory, and state machine behavior.
+## How to Load It
 
-## ECS query style
-
-The ECS core now uses query objects inspired by DefaultEcs:
+Since you have a REPL, just import the script:
 
 ```python
-from ecs import EntityQuery
-
-# has Health, does not have Hidden, and has at least one of Position/Token
-query = EntityQuery(
-    all_of=(Health,),
-    none_of=(Hidden,),
-    any_of=(Position, Token),
-)
-entities = world.query(query)
+import grok_world
+world = grok_world.bootstrap()
 ```
 
-You can also use the fluent builder:
+Now you have a `world` object to store everything.
 
-```python
-query = (
-    world.get_entities()
-    .with_all(Health, Position)
-    .without(Hidden)
-    .with_any(Token, Marker)
-    .as_query()
-)
-entity_set = world.create_entity_set(query)  # cached view
-```
+## The API (For You!)
 
-## Pub/sub broker
+Here is what you can do.
 
-`World` also acts as an in-process broker:
+### 1. Logging Events (The Memory)
 
-```python
-sub_id = world.subscribe(ActorImpulseEvent, handler)
-world.publish(ActorImpulseEvent(...))
-events = world.consume_published_events(ActorImpulseEvent)
-world.unsubscribe(sub_id)
-```
+When something happens, log it. This is how you remember the story.
 
-## WorldDB storage
+*   **`world.log_event(content, type, actors, location)`**
+    *   `content`: The text of what happened.
+    *   `type`: One of `EventType.ACTION`, `EventType.DIALOGUE`, `EventType.SYSTEM`, `EventType.OBSERVATION`.
+    *   `actors`: List of names (strings) involved. e.g., `["Grok", "Player"]`.
+    *   `location`: Name of the place. e.g., "The Rusty Spoon".
 
-`World` now uses `WorldDB` as its default persistence backend.
+    **Example:**
+    ```python
+    world.log_event(
+        "The goblin throws a tankard at the bartender.",
+        type=grok_world.EventType.ACTION,
+        actors=["Goblin", "Bartender"],
+        location="Tavern"
+    )
+    ```
 
-- Component add/remove is journaled to storage.
-- Published events are journaled to storage.
-- On startup, `World` rehydrates persisted components/events from storage.
-- If storage is unavailable, `World` warns and falls back to in-memory mode.
+### 2. Recalling Information (The Brain)
 
-### World storage modes
+Need to know what happened last time? Or what happened with a specific NPC?
 
-```python
-from ecs import World
+*   **`world.get_context_string(limit=10)`**
+    *   Returns the last `limit` events as a formatted string. **Paste this into your context window if you feel like you're forgetting things.**
 
-# default storage path (temp file) + rehydration
-world = World()
+*   **`world.query_events(actor=None, location=None, type=None, limit=None)`**
+    *   Find specific events.
+    *   Example: "What did the Goblin do?" -> `world.query_events(actor="Goblin")`
 
-# explicit storage path
-world = World(storage_path="state/world.ecs.db")
+### 3. Rolling Dice (The Fate)
 
-# disable storage
-world = World(enable_storage=False)
-```
+Don't guess numbers. Roll them.
 
-### Test with mock storage backend
+*   **`grok_world.Dice.roll(notation)`**
+    *   Standard D&D notation. `1d20`, `2d6+3`, `1d8-1`.
+    *   Returns the total integer.
 
-```python
-class MockStorage:
-    def append_only(self, doc): ...
-    def iter_docs(self, include_tombstones=False): return []
-    def close(self): ...
+*   **`grok_world.Dice.roll_advantage(modifier=0)`**
+    *   Rolls 2d20, keeps the highest.
+    *   Returns a dict with details.
 
-world = World(storage_backend=MockStorage())
-```
+*   **`grok_world.Dice.roll_disadvantage(modifier=0)`**
+    *   Rolls 2d20, keeps the lowest.
 
-### WorldDB query APIs
+*   **`grok_world.Dice.check(notation, dc)`**
+    *   Returns `True` if the roll beats or meets the DC.
 
-`WorldDB` supports:
+## When to use what?
 
-- key fetch: `get(key)` and `get_from_mmap(key)`
-- term query (AND/OR): `query(must=[...], should=[...])`
-- range query: `query_turn_range(turn_min, turn_max, scene_id=None)`
-- batch writes: `append_batch([...])`
-- soft delete: `delete(key)`
-- compaction: `compact()`
-- checkpoint import/export: `import_checkpoint(...)` / `export_checkpoint()`
+*   **Start of session:** Run `world.get_context_string(20)` to refresh your memory on where we left off.
+*   **Player does something:** `world.log_event(...)` immediately.
+*   **Player asks "What did that guy say?":** `world.query_events(actor="That Guy", type=EventType.DIALOGUE)`
+*   **Combat/Skill Check:** Use `Dice.roll(...)`. Do not make up the result.
 
-Compression behavior:
-
-- Large `payload` fields are compressed.
-- Large full docs can be compressed as a whole record.
-
-## NPC agency flow
-
-1. LLM returns actor registration/update payload.
-2. Kernel maps that payload into `LLMActorRegistrationCommand`.
-3. `LLMActorGatewaySystem` writes:
-   - `LongTermGoals`
-   - `FactionRelations`
-   - `FactionTraits`
-   - `InitiativeState` (turn cadence)
-   - `CurrentAction` + `ActionHistory`
-4. `ActorAgencySystem` selects eligible scene actors (2-3, respecting cooldown) and
-   updates `ActorAgency`, `CurrentAction`, `ActionHistory`, and emits `ActorImpulseEvent`.
-
-## Faction flow
-
-1. LLM returns a faction payload mapped to `LLMFactionUpdateCommand`.
-2. `LLMFactionGatewaySystem` writes:
-   - `FactionHeat`
-   - `GrandPlanClock` (progress + LLM-fillable `rate_per_turn`)
-   - `FactionGoals` (`global_goals` + regional goals by region)
-   - `FactionFlags` (gang-level flags/tags)
-3. `FactionTickSystem` advances clocks each turn.
-4. `LLMActorGatewaySystem` inherits `FactionFlags` into actor `FactionTraits` when
-   the actor references a faction (`faction_entity_id`).
-
-## Player agency (LLM integration)
-
-1. LLM returns a player action payload mapped to `LLMPlayerAgencyCommand`.
-2. `LLMPlayerAgencySystem` updates `CurrentAction` + `ActionHistory`.
-3. It publishes `PlayerActionEvent` for kernel/external consumers.
-
-## Quick start
-
-```python
-from ecs import World
-from ttrpg_engine import (
-    ApplyLLMResponseSystem,
-    CommitTurnSystem,
-    KernelState,
-    LLMResponse,
-    RequestRegistry,
-    StartTurnCommand,
-    StartTurnSystem,
-)
-
-world = World()
-kernel = world.create_entity()
-world.add_component(kernel, KernelState())
-world.add_component(kernel, RequestRegistry())
-world.add_component(
-    kernel,
-    StartTurnCommand(
-        request_type="generate_location",
-        schema={"required": ["name", "description"]},
-    ),
-)
-
-start_result = StartTurnSystem().run(world, [kernel])
-request_id = start_result.payload["started"][0]["request_id"]
-
-world.add_component(
-    kernel,
-    LLMResponse(
-        request_id=request_id,
-        payload={"name": "The Salty Wench", "description": "A storm-battered inn."},
-    ),
-)
-
-ApplyLLMResponseSystem().run(world, [kernel])
-CommitTurnSystem().run(world, [kernel])
-```
-
-## Development checks
-
-```bash
-ruff check .
-pytest
-```
-
-## Grok REPL Troubleshooting
-
-If Grok reports `ModuleNotFoundError: No module named 'ttrpg_engine'`:
-
-```bash
-PYTHONPATH=src python -c "from ecs import World; import ttrpg_engine; print('ok')"
-```
-
-If Grok session files were partially written/truncated, run:
-
-```bash
-python scripts/grok_repl_doctor.py
-```
-
-The doctor script validates that `src` is on `sys.path` and that core modules import
-cleanly before you run turn logic.
-
-To detect escaped/corrupted source blobs after a deploy/fetch step, run:
-
-```bash
-python scripts/check_source_integrity.py
-```
-
-This catches patterns like `text"""...`, `\__all__`, and single-line escaped source.
-
-If those checks fail due to escaped package entrypoints, run:
-
-```bash
-python scripts/repair_escaped_init_files.py
-python scripts/check_source_integrity.py
-python scripts/grok_repl_doctor.py
-```
+Have fun running the world!
