@@ -23,11 +23,12 @@ Here is what you can do.
 
 When something happens, log it. This is how you remember the story.
 
-*   **`world.log_event(content, type, actors, location)`**
+*   **`world.log_event(content, type, actors, location, tags)`**
     *   `content`: The text of what happened.
-    *   `type`: One of `EventType.ACTION`, `EventType.DIALOGUE`, `EventType.SYSTEM`, `EventType.OBSERVATION`.
+    *   `type`: One of `EventType.ACTION`, `EventType.DIALOGUE`, `EventType.SYSTEM`, `EventType.OBSERVATION`, `EventType.SUMMARY`.
     *   `actors`: List of names (strings) involved. e.g., `["Grok", "Player"]`.
     *   `location`: Name of the place. e.g., "The Rusty Spoon".
+    *   `tags`: List of strings for easier filtering. e.g., `["combat", "important", "quest_start"]`.
 
     **Example:**
     ```python
@@ -35,7 +36,8 @@ When something happens, log it. This is how you remember the story.
         "The goblin throws a tankard at the bartender.",
         type=grok_world.EventType.ACTION,
         actors=["Goblin", "Bartender"],
-        location="Tavern"
+        location="Tavern",
+        tags=["combat_start", "funny"]
     )
     ```
 
@@ -46,11 +48,32 @@ Need to know what happened last time? Or what happened with a specific NPC?
 *   **`world.get_context_string(limit=10)`**
     *   Returns the last `limit` events as a formatted string. **Paste this into your context window if you feel like you're forgetting things.**
 
-*   **`world.query_events(actor=None, location=None, type=None, limit=None)`**
+*   **`world.query_events(actors=None, location=None, type=None, tags=None, limit=None)`**
     *   Find specific events.
-    *   Example: "What did the Goblin do?" -> `world.query_events(actor="Goblin")`
+    *   `actors`: Can be a single name or a list. If a list, finds events where **ALL** actors participated.
+    *   `tags`: Can be a single tag or a list. If a list, finds events with **ALL** tags.
+    *   Example: "What did the Goblin do in the Tavern?" -> `world.query_events(actors="Goblin", location="Tavern")`
 
-### 3. Rolling Dice (The Fate)
+### 3. Managing Memory (The Long Term)
+
+If the log gets too big, you can prune old events and summarize them.
+
+*   **`world.prune_events(keep_last=100)`**
+    *   Removes all events except the last `keep_last`. Returns the list of removed events.
+
+*   **`world.summarize_pruned_events(summary_content, pruned_events)`**
+    *   Takes the list of events you just pruned and adds a single `SUMMARY` event to the log.
+    *   **Workflow:**
+        1. `pruned = world.prune_events(keep_last=50)`
+        2. Read `pruned` and write a summary string.
+        3. `world.summarize_pruned_events("The party met the king and killed the dragon.", pruned)`
+
+### 4. Saving/Loading (Persistence)
+
+*   **`world.to_json()`** -> Returns a JSON string of the whole world state. Save this to a file if you can.
+*   **`grok_world.WorldLog.from_json(json_str)`** -> Recreates the world object from the JSON string.
+
+### 5. Rolling Dice (The Fate)
 
 Don't guess numbers. Roll them.
 
@@ -72,7 +95,8 @@ Don't guess numbers. Roll them.
 
 *   **Start of session:** Run `world.get_context_string(20)` to refresh your memory on where we left off.
 *   **Player does something:** `world.log_event(...)` immediately.
-*   **Player asks "What did that guy say?":** `world.query_events(actor="That Guy", type=EventType.DIALOGUE)`
+*   **Player asks "What did that guy say?":** `world.query_events(actors="That Guy", type=EventType.DIALOGUE)`
 *   **Combat/Skill Check:** Use `Dice.roll(...)`. Do not make up the result.
+*   **Memory Full:** Prune events and summarize them to keep the context clean.
 
 Have fun running the world!

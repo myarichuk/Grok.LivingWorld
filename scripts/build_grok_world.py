@@ -20,10 +20,11 @@ def combine_files(src_dir, output_file):
     combined_content.append("import uuid")
     combined_content.append("import random")
     combined_content.append("import re")
+    combined_content.append("import json")
     combined_content.append("from datetime import datetime")
-    combined_content.append("from typing import List, Dict, Optional, Any, Set")
+    combined_content.append("from typing import List, Dict, Optional, Any, Set, Union")
     combined_content.append("from collections import defaultdict")
-    combined_content.append("from dataclasses import dataclass, field")
+    combined_content.append("from dataclasses import dataclass, field, asdict")
     combined_content.append("from enum import Enum")
     combined_content.append("\n")
 
