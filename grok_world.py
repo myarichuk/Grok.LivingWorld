@@ -40,19 +40,56 @@ class Faction:
         return "Neutral"
 
 @dataclass
+class AttireItem:
+    name: str
+    tags: Dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self):
+        if not self.tags:
+            return self.name
+        # Render tags nicely: "Plate Armor (condition=broken)"
+        tag_str = ", ".join(f"{k}={v}" for k, v in self.tags.items())
+        return f"{self.name} ({tag_str})"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_mixed(cls, data: Union[str, Dict, 'AttireItem']) -> 'AttireItem':
+        """Helper to normalize string/dict inputs into AttireItem objects."""
+        if isinstance(data, cls): return data
+        if isinstance(data, str): return cls(name=data)
+        if isinstance(data, dict):
+            d = data.copy()
+            # Extract name/item, treat rest as tags
+            name = d.pop('name', d.pop('item', 'Unknown Garment'))
+            return cls(name=name, tags=d)
+        return cls(name=str(data))
+
+@dataclass
 class PhysicalState:
     """Tracks the physical condition and configuration of an entity."""
     pose: str = "standing"  # e.g., standing, prone, kneeling, sitting
-    attire: str = "common clothes"
+    mobility: str = "unrestricted"  # e.g., hobbled, crawling, grappled
+    attire: List[AttireItem] = field(default_factory=lambda: [AttireItem("common clothes")])
     wounds: List[str] = field(default_factory=list)  # e.g., ["cut on left arm", "bruised eye"]
     status_effects: List[str] = field(default_factory=list)  # e.g., ["blinded", "stunned"]
-    restraints: Optional[str] = None  # e.g., "iron shackles", "rope bindings"
+    restraints: List[str] = field(default_factory=list)  # e.g., ["iron shackles", "rope bindings"]
+    exposed_areas: List[str] = field(default_factory=list)  # e.g., ["left shoulder", "chest"]
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'PhysicalState':
+        # Robustness: Handle legacy string formats if loading old data
+        if 'attire' in data:
+            raw = data['attire'] if isinstance(data['attire'], list) else [data['attire']]
+            data['attire'] = [AttireItem.from_mixed(item) for item in raw]
+            
+        if 'restraints' in data and isinstance(data['restraints'], str):
+            data['restraints'] = [data['restraints']] if data['restraints'] else []
+            
         return cls(**data)
 
 @dataclass
@@ -365,15 +402,59 @@ class WorldLog:
         
         changes = []
         for key, value in updates.items():
-            if hasattr(actor.state, key):
-                old_val = getattr(actor.state, key)
-                # Only log if there is an actual change
-                if old_val != value:
-                    setattr(actor.state, key, value)
-                    changes.append(f"{key}: {old_val} -> {value}")
-            else:
-                # We could raise an error here, but for resilience we'll ignore invalid keys
-                pass
+            # Determine mode based on suffix
+            mode = "replace"
+            target_key = key
+            
+            if key.endswith("_add"):
+                mode = "add"
+                target_key = key[:-4]
+            elif key.endswith("_remove"):
+                mode = "remove"
+                target_key = key[:-7]
+
+            if hasattr(actor.state, target_key):
+                old_val = getattr(actor.state, target_key)
+                
+                # Logic for Replace (Default)
+                if mode == "replace":
+                    # Ensure list type safety if replacing a list field
+                    if isinstance(old_val, list) and not isinstance(value, list):
+                        value = [value]
+                        
+                    if old_val != value:
+                        setattr(actor.state, target_key, value)
+                        changes.append(f"{target_key}: {old_val} -> {value}")
+                
+                # Logic for Add (Lists only, with Deduplication)
+                elif mode == "add" and isinstance(old_val, list):
+                    # Normalize Attire inputs if we are touching the attire list
+                    if target_key == "attire":
+                        value = [AttireItem.from_mixed(v) for v in (value if isinstance(value, list) else [value])]
+                    
+                    new_items = value if isinstance(value, list) else [value]
+                    added = []
+                    for item in new_items:
+                        if item not in old_val:
+                            old_val.append(item)
+                            added.append(item)
+                    if added:
+                        changes.append(f"Added to {target_key}: {added}")
+
+                # Logic for Remove (Lists only)
+                elif mode == "remove" and isinstance(old_val, list):
+                    # Normalize Attire inputs for removal matching
+                    if target_key == "attire":
+                        value = [AttireItem.from_mixed(v) for v in (value if isinstance(value, list) else [value])]
+                        
+                    items_to_remove = value if isinstance(value, list) else [value]
+                    removed = []
+                    for item in items_to_remove:
+                        if item in old_val:
+                            old_val.remove(item)
+                            removed.append(item)
+                    if removed:
+                        changes.append(f"Removed from {target_key}: {removed}")
         
         if changes:
             content = f"State update for {actor_name}: {', '.join(changes)}"
@@ -381,6 +462,28 @@ class WorldLog:
                 content += f" ({reason})"
             return self.log_event(content, type=EventType.SYSTEM, actors=[actor_name], tags=["state_change"])
         return None
+
+    # --- Persistence & REPL Ergonomics ---
+
+    def save(self, filepath: str = "campaign.json"):
+        with open(filepath, "w") as f:
+            f.write(self.to_json())
+        print(f"Game saved to {filepath}")
+
+    @classmethod
+    def load(cls, filepath: str = "campaign.json") -> 'WorldLog':
+        try:
+            with open(filepath, "r") as f:
+                print(f"Game loaded from {filepath}")
+                return cls.from_json(f.read())
+        except FileNotFoundError:
+            print(f"No save found at {filepath}, starting new world.")
+            return cls()
+
+    def log(self, *args, **kwargs): return self.log_event(*args, **kwargs)
+    def ctx(self, *args, **kwargs): return self.get_context_summary(*args, **kwargs)
+    def roll(self, *args, **kwargs): return self.log_roll(*args, **kwargs)
+    def update(self, *args, **kwargs): return self.update_actor_state(*args, **kwargs)
 
     def query_events(self, 
                      actors: Union[str, List[str]] = None, 
@@ -457,10 +560,37 @@ class WorldLog:
             for f in active_factions:
                 lines.append(f"{f.name}: {f.get_relationship()} ({f.standing})")
 
-        # 3. Recent Events
-        lines.append("\n=== RECENT LOG ===")
+        # 3. Recent Events (Fetch first to identify active actors)
         recent_events = self.query_events(limit=event_limit, reverse=True)
         recent_events.reverse()
+
+        # 2.5 Actor Physical State (Context Injection)
+        # We only show state for actors mentioned in the recent log to save tokens
+        active_actors = set()
+        for e in recent_events:
+            active_actors.update(e.actors)
+            
+        if active_actors:
+            lines.append("\n=== ACTOR STATE ===")
+            for name in sorted(list(active_actors)):
+                actor = self.get_actor(name)
+                if actor:
+                    s = actor.state
+                    # Only print if there's something noteworthy (not just standing/unrestricted/healthy)
+                    # But we always print attire/pose to ground the scene
+                    status_parts = [f"Pose: {s.pose}"]
+                    if s.mobility != "unrestricted": status_parts.append(f"Mobility: {s.mobility}")
+                    if s.wounds: status_parts.append(f"Wounds: {s.wounds}")
+                    if s.restraints: status_parts.append(f"Restraints: {s.restraints}")
+                    if s.status_effects: status_parts.append(f"Status: {s.status_effects}")
+                    
+                    # Attire string
+                    attire_str = ", ".join(str(item) for item in s.attire)
+                    status_parts.append(f"Wearing: {attire_str}")
+                    
+                    lines.append(f"{actor.name}: {' | '.join(status_parts)}")
+
+        lines.append("\n=== RECENT LOG ===")
         
         for event in recent_events:
             # Compact format: [Turn X] Content (Location)
@@ -592,4 +722,7 @@ class WorldLog:
 def bootstrap():
     """Returns a fresh WorldLog instance ready for use."""
     return WorldLog()
+def session(filepath='campaign.json'):
+    """Quick starter: loads existing or creates new."""
+    return WorldLog.load(filepath)
 

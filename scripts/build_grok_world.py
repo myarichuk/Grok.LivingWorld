@@ -50,6 +50,9 @@ def combine_files(src_dir, output_file):
     combined_content.append("def bootstrap():")
     combined_content.append('    """Returns a fresh WorldLog instance ready for use."""')
     combined_content.append("    return WorldLog()")
+    combined_content.append("def session(filepath='campaign.json'):")
+    combined_content.append('    """Quick starter: loads existing or creates new."""')
+    combined_content.append("    return WorldLog.load(filepath)")
     combined_content.append("\n")
     
     # Write to file

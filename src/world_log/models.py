@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 from datetime import datetime
 from enum import Enum
 import json
@@ -34,19 +34,56 @@ class Faction:
         return "Neutral"
 
 @dataclass
+class AttireItem:
+    name: str
+    tags: Dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self):
+        if not self.tags:
+            return self.name
+        # Render tags nicely: "Plate Armor (condition=broken)"
+        tag_str = ", ".join(f"{k}={v}" for k, v in self.tags.items())
+        return f"{self.name} ({tag_str})"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_mixed(cls, data: Union[str, Dict, 'AttireItem']) -> 'AttireItem':
+        """Helper to normalize string/dict inputs into AttireItem objects."""
+        if isinstance(data, cls): return data
+        if isinstance(data, str): return cls(name=data)
+        if isinstance(data, dict):
+            d = data.copy()
+            # Extract name/item, treat rest as tags
+            name = d.pop('name', d.pop('item', 'Unknown Garment'))
+            return cls(name=name, tags=d)
+        return cls(name=str(data))
+
+@dataclass
 class PhysicalState:
     """Tracks the physical condition and configuration of an entity."""
     pose: str = "standing"  # e.g., standing, prone, kneeling, sitting
-    attire: str = "common clothes"
+    mobility: str = "unrestricted"  # e.g., hobbled, crawling, grappled
+    attire: List[AttireItem] = field(default_factory=lambda: [AttireItem("common clothes")])
     wounds: List[str] = field(default_factory=list)  # e.g., ["cut on left arm", "bruised eye"]
     status_effects: List[str] = field(default_factory=list)  # e.g., ["blinded", "stunned"]
-    restraints: Optional[str] = None  # e.g., "iron shackles", "rope bindings"
+    restraints: List[str] = field(default_factory=list)  # e.g., ["iron shackles", "rope bindings"]
+    exposed_areas: List[str] = field(default_factory=list)  # e.g., ["left shoulder", "chest"]
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'PhysicalState':
+        # Robustness: Handle legacy string formats if loading old data
+        if 'attire' in data:
+            raw = data['attire'] if isinstance(data['attire'], list) else [data['attire']]
+            data['attire'] = [AttireItem.from_mixed(item) for item in raw]
+            
+        if 'restraints' in data and isinstance(data['restraints'], str):
+            data['restraints'] = [data['restraints']] if data['restraints'] else []
+            
         return cls(**data)
 
 @dataclass

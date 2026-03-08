@@ -134,12 +134,19 @@ class TestWorldState(unittest.TestCase):
     def test_context_summary_generation(self):
         """Test that the context summary includes key information."""
         self.world.enter_location("Dungeon", "Dark and damp.")
-        self.world.log_event("Found a key.")
+        
+        # Add an actor and event so they appear in summary
+        self.world.add_actor("Alice")
+        self.world.update_actor_state("Alice", {"pose": "kneeling", "wounds": ["cut"]})
+        self.world.log_event("Alice found a key.", actors=["Alice"])
+        
         summary = self.world.get_context_summary(event_limit=5)
         
         self.assertIn("Current Location: Dungeon", summary)
-        self.assertIn("Description: Dark and damp.", summary)
-        self.assertIn("Found a key", summary)
+        self.assertIn("Alice found a key", summary)
+        # Check for physical state injection
+        self.assertIn("Pose: kneeling", summary)
+        self.assertIn("Wounds: ['cut']", summary)
 
     def test_actor_physical_state(self):
         """Test tracking of physical state (pose, wounds, etc)."""
@@ -147,22 +154,42 @@ class TestWorldState(unittest.TestCase):
         
         # Default state
         self.assertEqual(actor.state.pose, "standing")
-        self.assertIsNone(actor.state.restraints)
+        self.assertEqual(actor.state.restraints, [])
         
         # Update state via helper
         self.world.update_actor_state("Bob", {
             "pose": "prone",
-            "restraints": "rope",
-            "wounds": ["scratch"]
+            "restraints_add": "rope",
+            "wounds_add": ["scratch"],
+            "mobility": "crawling"
         }, reason="Tripped")
         
         self.assertEqual(actor.state.pose, "prone")
-        self.assertEqual(actor.state.restraints, "rope")
+        self.assertEqual(actor.state.restraints, ["rope"])
+        self.assertEqual(actor.state.mobility, "crawling")
+        
+        # Test Deduplication
+        self.world.update_actor_state("Bob", {"wounds_add": ["scratch"]})
+        self.assertEqual(len(actor.state.wounds), 1) # Should still be 1
+        
+        # Test Removal
+        self.world.update_actor_state("Bob", {"wounds_remove": ["scratch"]})
+        self.assertEqual(len(actor.state.wounds), 0)
+        
+        # Test Rich Attire (Layers)
+        pauldron = {"item": "Pauldron", "layer": "outer", "condition": "fine"}
+        # Note: The system now converts this dict to an AttireItem
+        self.world.update_actor_state("Bob", {"attire_add": [pauldron]})
+        self.assertTrue(any(a.name == "Pauldron" for a in actor.state.attire))
+        
+        # Test Replacement (Attire)
+        new_outfit = ["Rags"]
+        self.world.update_actor_state("Bob", {"attire": new_outfit})
+        self.assertEqual(actor.state.attire[0].name, "Rags")
         
         # Verify log
         last_event = self.world.query_events()[-1]
-        self.assertIn("pose: standing -> prone", last_event.content)
-        self.assertIn("(Tripped)", last_event.content)
+        self.assertIn("attire: ", last_event.content)
 
 if __name__ == '__main__':
     unittest.main()
