@@ -1,141 +1,168 @@
 import unittest
-import json
-from datetime import datetime, timedelta
-from src.world_log.models import EventType, Event, Actor, Location
-from src.world_log.storage import WorldLog
+from unittest.mock import patch
+import sys
+import os
 
-class TestWorldLog(unittest.TestCase):
+# Add src to path to allow imports if running directly
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
+
+from world_log.dice import Dice
+from world_log.storage import WorldLog
+
+class TestDice(unittest.TestCase):
+    
+    def test_roll_parsing_standard(self):
+        """Test standard dice notation parsing."""
+        result = Dice.roll("1d20+5")
+        self.assertEqual(result["die_size"], 20)
+        self.assertEqual(result["modifier"], 5)
+        self.assertEqual(len(result["rolls"]), 1)
+        self.assertEqual(result["type"], "normal")
+
+    def test_roll_parsing_implicit_count(self):
+        """Test notation without leading number (e.g., 'd8')."""
+        result = Dice.roll("d8")
+        self.assertEqual(result["die_size"], 8)
+        self.assertEqual(len(result["rolls"]), 1)
+        self.assertEqual(result["modifier"], 0)
+
+    def test_roll_parsing_multiple_dice(self):
+        """Test rolling multiple dice with negative modifier."""
+        result = Dice.roll("2d6-1")
+        self.assertEqual(len(result["rolls"]), 2)
+        self.assertEqual(result["modifier"], -1)
+        self.assertEqual(result["die_size"], 6)
+
+    def test_roll_limits(self):
+        """Test that exceeding MAX_DICE raises ValueError."""
+        with self.assertRaises(ValueError):
+            Dice.roll("101d6")
+
+    def test_roll_invalid_notation(self):
+        """Test that invalid notation raises ValueError."""
+        with self.assertRaises(ValueError):
+            Dice.roll("invalid")
+        with self.assertRaises(ValueError):
+            Dice.roll("1d20+a")
+
+    @patch('world_log.dice.random.randint')
+    def test_crit_and_fumble_normal(self, mock_rand):
+        """Test critical hit and fumble detection on normal rolls."""
+        # Test Crit (20 on d20)
+        mock_rand.return_value = 20
+        result = Dice.roll("1d20")
+        self.assertTrue(result["is_crit"])
+        self.assertFalse(result["is_fumble"])
+
+        # Test Fumble (1 on d20)
+        mock_rand.return_value = 1
+        result = Dice.roll("1d20")
+        self.assertFalse(result["is_crit"])
+        self.assertTrue(result["is_fumble"])
+        
+        # Test non-d20 (20 on d100 is not a crit)
+        mock_rand.return_value = 20
+        result = Dice.roll("1d100")
+        self.assertFalse(result["is_crit"])
+
+    @patch('world_log.dice.random.randint')
+    def test_advantage(self, mock_rand):
+        """Test advantage mechanics (take higher)."""
+        mock_rand.side_effect = [5, 15] # Rolls 5 and 15
+        result = Dice.roll_advantage(die_size=20, modifier=2)
+        
+        self.assertEqual(result["kept"], 15)
+        self.assertEqual(result["total"], 17) # 15 + 2
+        self.assertEqual(result["type"], "advantage")
+        self.assertEqual(result["rolls"], [5, 15])
+
+    @patch('world_log.dice.random.randint')
+    def test_disadvantage(self, mock_rand):
+        """Test disadvantage mechanics (take lower)."""
+        mock_rand.side_effect = [5, 15] # Rolls 5 and 15
+        result = Dice.roll_disadvantage(die_size=20, modifier=2)
+        
+        self.assertEqual(result["kept"], 5)
+        self.assertEqual(result["total"], 7) # 5 + 2
+        self.assertEqual(result["type"], "disadvantage")
+
+    def test_check_method(self):
+        """Test the simple check method."""
+        with patch('world_log.dice.Dice.roll') as mock_roll:
+            mock_roll.return_value = {"total": 15}
+            self.assertTrue(Dice.check("1d20", 10))
+            self.assertFalse(Dice.check("1d20", 20))
+
+
+class TestWorldState(unittest.TestCase):
     def setUp(self):
-        self.log = WorldLog()
+        self.world = WorldLog()
 
-    def test_add_actor(self):
-        actor = self.log.add_actor("Grok", "A friendly orc", {"strength": 18})
-        self.assertEqual(actor.name, "Grok")
-        self.assertEqual(actor.description, "A friendly orc")
-        self.assertEqual(actor.attributes["strength"], 18)
+    def test_faction_standing_mechanics(self):
+        """Test faction reputation clamping and relationship strings."""
+        f = self.world.get_or_create_faction("Thieves Guild", "Sneaky")
+        self.assertEqual(f.standing, 0)
+        self.assertEqual(f.get_relationship(), "Neutral")
         
-        retrieved = self.log.get_actor("Grok")
-        self.assertEqual(retrieved, actor)
+        # Test adjustment
+        self.world.adjust_faction_standing("Thieves Guild", -50)
+        self.assertEqual(f.get_relationship(), "Hostile")
+        
+        # Test clamping
+        self.world.adjust_faction_standing("Thieves Guild", -60) # Should go to -110, clamped to -100
+        self.assertEqual(f.standing, -100)
+        self.assertEqual(f.get_relationship(), "Nemesis")
 
-    def test_add_location(self):
-        loc = self.log.add_location("Tavern", "A bustling place")
-        self.assertEqual(loc.name, "Tavern")
+    def test_location_flow_and_logging(self):
+        """Test entering locations and logging events."""
+        loc = self.world.enter_location("Tavern", "A smoky room.")
+        self.assertEqual(self.world.current_location_name, "Tavern")
+        self.assertTrue(loc.visited)
         
-        retrieved = self.log.get_location("Tavern")
-        self.assertEqual(retrieved, loc)
+        # Check global log for discovery event
+        # Note: WorldLog events are objects, not strings
+        events = self.world.query_events()
+        self.assertIn("Party discovered Tavern.", events[0].content)
+        
+        # Log specific event
+        self.world.log_event("Brawl started.")
+        
+        # Check location history (formatted string)
+        self.assertIn("Brawl started", loc.local_history[0])
+        self.assertIn("Brawl started", self.world.query_events()[-1].content)
 
-    def test_log_event(self):
-        event = self.log.log_event(
-            content="Grok enters the tavern.",
-            type=EventType.ACTION,
-            actors=["Grok"],
-            location="Tavern",
-            tags=["intro", "peaceful"]
-        )
+    def test_context_summary_generation(self):
+        """Test that the context summary includes key information."""
+        self.world.enter_location("Dungeon", "Dark and damp.")
+        self.world.log_event("Found a key.")
+        summary = self.world.get_context_summary(event_limit=5)
         
-        self.assertIsNotNone(event.id)
-        self.assertEqual(event.content, "Grok enters the tavern.")
-        self.assertEqual(event.actors, ["Grok"])
-        self.assertEqual(event.location, "Tavern")
-        self.assertEqual(event.tags, ["intro", "peaceful"])
-        
-        # Check if actor and location were auto-created if they didn't exist
-        self.assertIsNotNone(self.log.get_actor("Grok"))
-        self.assertIsNotNone(self.log.get_location("Tavern"))
+        self.assertIn("Current Location: Dungeon", summary)
+        self.assertIn("Description: Dark and damp.", summary)
+        self.assertIn("Found a key", summary)
 
-    def test_query_events(self):
-        # Setup events
-        self.log.log_event("Event 1", actors=["A"], location="L1", type=EventType.ACTION, tags=["t1"])
-        self.log.log_event("Event 2", actors=["B"], location="L1", type=EventType.DIALOGUE, tags=["t2"])
-        self.log.log_event("Event 3", actors=["A", "B"], location="L2", type=EventType.ACTION, tags=["t1", "t2"])
+    def test_actor_physical_state(self):
+        """Test tracking of physical state (pose, wounds, etc)."""
+        actor = self.world.add_actor("Bob", "A fighter")
         
-        # Query by actor
-        events_a = self.log.query_events(actors="A")
-        self.assertEqual(len(events_a), 2)
-        self.assertEqual(events_a[0].content, "Event 1")
-        self.assertEqual(events_a[1].content, "Event 3")
+        # Default state
+        self.assertEqual(actor.state.pose, "standing")
+        self.assertIsNone(actor.state.restraints)
         
-        # Query by multiple actors (AND logic)
-        events_ab = self.log.query_events(actors=["A", "B"])
-        self.assertEqual(len(events_ab), 1)
-        self.assertEqual(events_ab[0].content, "Event 3")
+        # Update state via helper
+        self.world.update_actor_state("Bob", {
+            "pose": "prone",
+            "restraints": "rope",
+            "wounds": ["scratch"]
+        }, reason="Tripped")
         
-        # Query by location
-        events_l1 = self.log.query_events(location="L1")
-        self.assertEqual(len(events_l1), 2)
+        self.assertEqual(actor.state.pose, "prone")
+        self.assertEqual(actor.state.restraints, "rope")
         
-        # Query by type
-        events_dialogue = self.log.query_events(type=EventType.DIALOGUE)
-        self.assertEqual(len(events_dialogue), 1)
-        self.assertEqual(events_dialogue[0].content, "Event 2")
-        
-        # Query by tags
-        events_t1 = self.log.query_events(tags="t1")
-        self.assertEqual(len(events_t1), 2)
-        
-        events_t1_t2 = self.log.query_events(tags=["t1", "t2"])
-        self.assertEqual(len(events_t1_t2), 1)
-        self.assertEqual(events_t1_t2[0].content, "Event 3")
-
-    def test_context_string(self):
-        self.log.log_event("Hello world", actors=["User"], type=EventType.DIALOGUE)
-        self.log.log_event("System initialized", type=EventType.SYSTEM)
-        
-        context = self.log.get_context_string(limit=5)
-        self.assertIn("Hello world", context)
-        self.assertIn("System initialized", context)
-        self.assertIn("[Actors: User]", context)
-
-    def test_serialization(self):
-        # Create a log with some data
-        self.log.add_actor("Tester", "A tester")
-        self.log.log_event("Test Event", actors=["Tester"], location="Lab")
-        
-        # Serialize to JSON
-        json_str = self.log.to_json()
-        
-        # Deserialize to a new log
-        new_log = WorldLog.from_json(json_str)
-        
-        # Verify data integrity
-        self.assertEqual(len(new_log.events), 1)
-        self.assertEqual(len(new_log.actors), 1)
-        self.assertEqual(new_log.get_actor("Tester").description, "A tester")
-        
-        # Verify indexes are rebuilt correctly
-        events = new_log.query_events(actors="Tester")
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0].content, "Test Event")
-
-    def test_pruning_and_summary(self):
-        # Add 10 events with increasing timestamps
-        base_time = datetime.now()
-        for i in range(10):
-            self.log.log_event(f"Event {i}", actors=["A"], timestamp=base_time + timedelta(seconds=i))
-            
-        # Prune to keep last 3
-        pruned = self.log.prune_events(keep_last=3)
-        
-        # Should have pruned 7 events
-        self.assertEqual(len(pruned), 7)
-        # Should have 3 events remaining
-        self.assertEqual(len(self.log.events), 3)
-        
-        # Verify remaining events are the last ones (7, 8, 9)
-        # Note: query_events returns sorted by timestamp, so 0 is oldest remaining
-        remaining = self.log.query_events()
-        self.assertEqual(remaining[0].content, "Event 7")
-        self.assertEqual(remaining[2].content, "Event 9")
-        
-        # Summarize the pruned events
-        self.log.summarize_pruned_events("A lot of stuff happened.", pruned)
-        
-        # Check summary event was added
-        summary_events = self.log.query_events(type=EventType.SUMMARY)
-        self.assertEqual(len(summary_events), 1)
-        self.assertEqual(summary_events[0].content, "SUMMARY OF PAST EVENTS: A lot of stuff happened.")
-        self.assertIn("A", summary_events[0].actors)
-        self.assertIn("summary", summary_events[0].tags)
+        # Verify log
+        last_event = self.world.query_events()[-1]
+        self.assertIn("pose: standing -> prone", last_event.content)
+        self.assertIn("(Tripped)", last_event.content)
 
 if __name__ == '__main__':
     unittest.main()

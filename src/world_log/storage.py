@@ -4,13 +4,16 @@ from datetime import datetime
 from typing import List, Dict, Optional, Set, Union
 from collections import defaultdict
 
-from .models import Event, Actor, Location, EventType
+from .models import Event, Actor, Location, Faction, EventType
 
 class WorldLog:
     def __init__(self):
         self.events: Dict[str, Event] = {}
         self.actors: Dict[str, Actor] = {}
         self.locations: Dict[str, Location] = {}
+        self.factions: Dict[str, Faction] = {}
+        self.current_location_name: Optional[str] = None
+        self.turn_count: int = 0
         
         # Indexes
         # These lists store event IDs in insertion order (chronological)
@@ -30,12 +33,35 @@ class WorldLog:
     def get_actor(self, name: str) -> Optional[Actor]:
         return self.actors.get(name)
 
-    def add_location(self, name: str, description: str = "", attributes: Dict = None) -> Location:
-        if attributes is None:
-            attributes = {}
-        location = Location(name=name, description=description, attributes=attributes)
-        self.locations[name] = location
-        return location
+    def get_or_create_faction(self, name: str, description: str = "Unknown") -> Faction:
+        if name not in self.factions:
+            self.factions[name] = Faction(name, description)
+        return self.factions[name]
+
+    def adjust_faction_standing(self, faction_name: str, amount: int) -> int:
+        faction = self.get_or_create_faction(faction_name)
+        faction.standing = max(-100, min(100, faction.standing + amount))
+        return faction.standing
+
+    def enter_location(self, name: str, description: str = "", parent: str = None) -> Location:
+        """Moves the party to a location, creating it if it doesn't exist."""
+        if name not in self.locations:
+            self.locations[name] = Location(name, description, parent)
+        
+        loc = self.locations[name]
+        # Update description if provided and previously empty
+        if description and not loc.description:
+            loc.description = description
+            
+        self.current_location_name = name
+        
+        if not loc.visited:
+            loc.visited = True
+            self.log_event(f"Party discovered {name}.", type=EventType.SYSTEM, location=name)
+        else:
+            self.log_event(f"Party returned to {name}.", type=EventType.SYSTEM, location=name)
+            
+        return loc
     
     def get_location(self, name: str) -> Optional[Location]:
         return self.locations.get(name)
@@ -47,6 +73,7 @@ class WorldLog:
                   location: str = None,
                   metadata: Dict = None,
                   tags: List[str] = None,
+                  roll_data: Dict = None,
                   timestamp: datetime = None) -> Event:
         
         if actors is None:
@@ -57,6 +84,13 @@ class WorldLog:
             tags = []
         if timestamp is None:
             timestamp = datetime.now()
+        
+        # Increment turn
+        self.turn_count += 1
+        
+        # Default to current location if not specified
+        if location is None and self.current_location_name:
+            location = self.current_location_name
             
         event_id = str(uuid.uuid4())
         
@@ -67,17 +101,23 @@ class WorldLog:
         
         # Auto-register location if it doesn't exist
         if location and location not in self.locations:
-            self.add_location(location)
+            self.locations[location] = Location(name=location)
+            
+        # Update location history
+        if location:
+            self.locations[location].local_history.append(f"[Turn {self.turn_count}] {content}")
 
         event = Event(
             id=event_id,
+            turn=self.turn_count,
             timestamp=timestamp,
             type=type,
             content=content,
             actors=actors,
             location=location,
             metadata=metadata,
-            tags=tags
+            tags=tags,
+            roll_data=roll_data
         )
         
         self.events[event_id] = event
@@ -96,6 +136,50 @@ class WorldLog:
             self._events_by_tag[tag].append(event_id)
         
         return event
+
+    def log_roll(self, actor: str, description: str, roll_dict: dict):
+        """Specialized logger for dice rolls."""
+        tags = ["roll"]
+        if roll_dict.get("is_crit"): tags.append("crit")
+        if roll_dict.get("is_fumble"): tags.append("fumble")
+        
+        content = f"{actor} rolled {description}: {roll_dict['total']} (Dice: {roll_dict['rolls']})"
+        if "kept" in roll_dict:
+            content += f" kept {roll_dict['kept']} ({roll_dict['type']})"
+            
+        # Add modifier info if relevant
+        if roll_dict.get("modifier", 0) != 0:
+            content += f" [{roll_dict['modifier']:+}]"
+            
+        self.log_event(content, type=EventType.SYSTEM, actors=[actor], tags=tags, roll_data=roll_dict)
+
+    def update_actor_state(self, actor_name: str, updates: Dict[str, Any], reason: str = None) -> Optional[Event]:
+        """
+        Updates the physical state of an actor and logs the change.
+        Example: world.update_actor_state("Bob", {"pose": "prone", "wounds": ["arrow in knee"]})
+        """
+        actor = self.get_actor(actor_name)
+        if not actor:
+            actor = self.add_actor(actor_name)
+        
+        changes = []
+        for key, value in updates.items():
+            if hasattr(actor.state, key):
+                old_val = getattr(actor.state, key)
+                # Only log if there is an actual change
+                if old_val != value:
+                    setattr(actor.state, key, value)
+                    changes.append(f"{key}: {old_val} -> {value}")
+            else:
+                # We could raise an error here, but for resilience we'll ignore invalid keys
+                pass
+        
+        if changes:
+            content = f"State update for {actor_name}: {', '.join(changes)}"
+            if reason:
+                content += f" ({reason})"
+            return self.log_event(content, type=EventType.SYSTEM, actors=[actor_name], tags=["state_change"])
+        return None
 
     def query_events(self, 
                      actors: Union[str, List[str]] = None, 
@@ -150,18 +234,37 @@ class WorldLog:
             
         return results
 
-    def get_context_string(self, limit: int = 10) -> str:
-        """Returns a formatted string of recent events suitable for LLM context."""
-        recent_events = self.query_events(limit=limit, reverse=True)
+    def get_context_summary(self, event_limit: int = 10) -> str:
+        """
+        Generates a rich, token-efficient context summary for the LLM.
+        Includes: Current Location, Faction Standings, and Recent Log.
+        """
+        lines = ["=== WORLD STATE ==="]
+        lines.append(f"Turn: {self.turn_count}")
+        
+        # 1. Location Context
+        if self.current_location_name:
+            loc = self.locations[self.current_location_name]
+            lines.append(f"Current Location: {loc.name}")
+            if loc.description:
+                lines.append(f"Description: {loc.description}")
+        
+        # 2. Faction Context (Only show non-neutral or active)
+        active_factions = [f for f in self.factions.values() if f.standing != 0]
+        if active_factions:
+            lines.append("\n=== FACTIONS ===")
+            for f in active_factions:
+                lines.append(f"{f.name}: {f.get_relationship()} ({f.standing})")
+
+        # 3. Recent Events
+        lines.append("\n=== RECENT LOG ===")
+        recent_events = self.query_events(limit=event_limit, reverse=True)
         recent_events.reverse()
         
-        lines = []
         for event in recent_events:
-            timestamp_str = event.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-            actors_str = f" [Actors: {', '.join(event.actors)}]" if event.actors else ""
-            loc_str = f" [Loc: {event.location}]" if event.location else ""
-            tags_str = f" [Tags: {', '.join(event.tags)}]" if event.tags else ""
-            lines.append(f"[{timestamp_str}] ({event.type.value}){actors_str}{loc_str}{tags_str}: {event.content}")
+            # Compact format: [Turn X] Content (Location)
+            loc_suffix = f" ({event.location})" if event.location and event.location != self.current_location_name else ""
+            lines.append(f"[Turn {event.turn}] {event.content}{loc_suffix}")
             
         return "\n".join(lines)
 
@@ -170,7 +273,10 @@ class WorldLog:
         data = {
             "events": [event.to_dict() for event in self.events.values()],
             "actors": [actor.to_dict() for actor in self.actors.values()],
-            "locations": [location.to_dict() for location in self.locations.values()]
+            "locations": [location.to_dict() for location in self.locations.values()],
+            "factions": [faction.to_dict() for faction in self.factions.values()],
+            "current_location": self.current_location_name,
+            "turn_count": self.turn_count
         }
         return json.dumps(data, indent=2)
 
@@ -179,6 +285,8 @@ class WorldLog:
         """Deserializes a WorldLog from a JSON string."""
         data = json.loads(json_str)
         world = cls()
+        world.current_location_name = data.get("current_location")
+        world.turn_count = data.get("turn_count", 0)
         
         for actor_data in data.get("actors", []):
             actor = Actor.from_dict(actor_data)
@@ -187,6 +295,10 @@ class WorldLog:
         for loc_data in data.get("locations", []):
             loc = Location.from_dict(loc_data)
             world.locations[loc.name] = loc
+            
+        for fac_data in data.get("factions", []):
+            fac = Faction.from_dict(fac_data)
+            world.factions[fac.name] = fac
             
         # Reconstruct events and indexes
         # We need to sort events by timestamp to ensure chronological order in _chronological_ids
@@ -243,7 +355,7 @@ class WorldLog:
                 if eid in self._events_by_tag[tag]:
                     self._events_by_tag[tag].remove(eid)
                     
-        self._chronological_ids = kept_ids
+        self._chronological_ids = kept_ids 
         return pruned_events
 
     def summarize_pruned_events(self, summary_content: str, pruned_events: List[Event]):

@@ -34,11 +34,11 @@ def combine_files(src_dir, output_file):
             with open(filepath, "r") as f:
                 content = f.read()
                 
-                # Remove local imports (e.g., from .models import ...)
-                content = re.sub(r"from \.[\w]+ import .+\n", "", content)
-                # Remove standard imports as we added them at the top
-                content = re.sub(r"import .+\n", "", content)
-                content = re.sub(r"from [\w]+ import .+\n", "", content)
+                # Remove all import statements as they are consolidated at the top.
+                # This single regex handles 'import ...', 'from ... import ...', and 'from . import ...'
+                # It is anchored to the start of each line and handles optional newlines.
+                import_pattern = r"^(?:from \.[\w]+ import .*|import .*|from [\w]+ import .*)\n?"
+                content = re.sub(import_pattern, "", content, flags=re.MULTILINE)
                 
                 combined_content.append(f"# --- {filename} ---")
                 combined_content.append(content)

@@ -212,3 +212,5 @@ __marimo__/
 /.idea/vcs.xml
 /.idea/developer-tools.xml
 /.idea/JunieProjectTechnologies.xml
+/.idea/inspectionProfiles/Project_Default.xml
+/uv.lock
