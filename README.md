@@ -91,6 +91,15 @@ Don't guess numbers. Roll them.
 *   **`grok_world.Dice.check(notation, dc)`**
     *   Returns `True` if the roll beats or meets the DC.
 
+## Instructions for Grok
+
+When using this toolset, remember:
+1.  **Consistency is Key**: Always log significant events. If it's not in the log, it didn't happen.
+2.  **Use the Dice**: Avoid deciding outcomes arbitrarily. Let the dice decide success or failure, then narrate the result.
+3.  **Check Context**: Before generating a response, check the recent context to ensure continuity.
+4.  **Prune Regularly**: If the context gets too long, summarize and prune to keep the memory manageable.
+5.  **Validate Inputs**: The tools now have internal validation, but try to provide clean inputs (e.g., valid dice notation).
+
 ## When to use what?
 
 *   **Start of session:** Run `world.get_context_string(20)` to refresh your memory on where we left off.

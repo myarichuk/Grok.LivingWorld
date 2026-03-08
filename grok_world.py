@@ -19,6 +19,7 @@ class EventType(Enum):
 
 @dataclass
 class Faction:
+    """Represents a political or social group within the world."""
     name: str
     description: str
     standing: int = 0  # Range: -100 (Nemesis) to 100 (Ally)
@@ -33,6 +34,7 @@ class Faction:
         return cls(**data)
 
     def get_relationship(self) -> str:
+        """Returns a text description of the relationship based on standing."""
         if self.standing >= 80: return "Ally"
         if self.standing >= 20: return "Friendly"
         if self.standing <= -80: return "Nemesis"
@@ -41,6 +43,7 @@ class Faction:
 
 @dataclass
 class AttireItem:
+    """Represents a piece of clothing or equipment worn by an actor."""
     name: str
     tags: Dict[str, Any] = field(default_factory=dict)
 
@@ -94,6 +97,7 @@ class PhysicalState:
 
 @dataclass
 class Actor:
+    """Represents a character or entity in the world."""
     name: str
     description: str = ""
     state: PhysicalState = field(default_factory=PhysicalState)
@@ -110,6 +114,7 @@ class Actor:
 
 @dataclass
 class Location:
+    """Represents a place in the world."""
     name: str
     description: str = ""
     parent_location: Optional[str] = None
@@ -127,6 +132,7 @@ class Location:
 
 @dataclass
 class Event:
+    """Represents a single logged event in the world history."""
     id: str
     turn: int
     type: EventType
@@ -161,29 +167,68 @@ class Dice:
     MAX_DICE = 100  # Safety limit to prevent execution hangs
     
     @staticmethod
+    def _validate_roll_result(result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Lightweight schema validation to ensure the roll result structure is consistent.
+        
+        Args:
+            result (Dict[str, Any]): The dictionary to validate.
+            
+        Returns:
+            Dict[str, Any]: The validated dictionary.
+            
+        Raises:
+            ValueError: If required keys are missing.
+            TypeError: If types are incorrect.
+        """
+        required_keys = {"total", "rolls", "modifier", "die_size", "type", "is_crit", "is_fumble"}
+        if not all(key in result for key in required_keys):
+            missing = required_keys - result.keys()
+            raise ValueError(f"Roll result missing keys: {missing}")
+        
+        if not isinstance(result["total"], int):
+             raise TypeError("Roll total must be an integer")
+             
+        return result
+
+    @staticmethod
     def roll(notation: str) -> Dict[str, Any]:
         """
         Rolls dice based on standard notation (e.g., '1d20', '2d6+4', '1d8-1').
         Returns a dictionary with details for narrative generation.
+        
+        Args:
+            notation (str): Dice notation string (e.g., "1d20+5").
+            
+        Returns:
+            Dict[str, Any]: A dictionary containing the roll details.
         """
         notation = notation.lower().replace(" ", "")
-        # Updated regex to allow 'd20' (implicit 1) and optional modifiers
+        # Regex to allow 'd20' (implicit 1) and optional modifiers
         match = re.match(r"^(\d+)?d(\d+)([+-]\d+)?$", notation)
         
         if not match:
             raise ValueError(f"Invalid dice notation: {notation}")
             
-        num_dice = int(match.group(1)) if match.group(1) else 1
+        num_dice_str = match.group(1)
+        num_dice = int(num_dice_str) if num_dice_str else 1
+        
         die_size = int(match.group(2))
         modifier = int(match.group(3)) if match.group(3) else 0
         
         if num_dice > Dice.MAX_DICE:
             raise ValueError(f"Too many dice: {num_dice}. Max is {Dice.MAX_DICE}.")
+            
+        if num_dice < 1:
+             raise ValueError(f"Number of dice must be at least 1.")
+
+        if die_size < 1:
+            raise ValueError(f"Die size must be at least 1.")
 
         rolls = [random.randint(1, die_size) for _ in range(num_dice)]
         total = sum(rolls) + modifier
         
-        return {
+        result = {
             "total": total,
             "rolls": rolls,
             "modifier": modifier,
@@ -192,6 +237,45 @@ class Dice:
             "is_crit": die_size == 20 and 20 in rolls and num_dice == 1,
             "is_fumble": die_size == 20 and 1 in rolls and num_dice == 1
         }
+        return Dice._validate_roll_result(result)
+
+    @staticmethod
+    def _roll_multi(die_size: int, modifier: int, mode: str) -> Dict[str, Any]:
+        """
+        Helper for advantage/disadvantage rolls.
+        
+        Args:
+            die_size (int): Size of the die (default 20).
+            modifier (int): Modifier to add to the total.
+            mode (str): 'advantage' or 'disadvantage'.
+            
+        Returns:
+            Dict[str, Any]: Roll result.
+        """
+        if die_size < 1:
+            raise ValueError(f"Die size must be at least 1.")
+            
+        r1 = random.randint(1, die_size)
+        r2 = random.randint(1, die_size)
+        
+        if mode == "advantage":
+            kept = max(r1, r2)
+        elif mode == "disadvantage":
+            kept = min(r1, r2)
+        else:
+            raise ValueError(f"Invalid mode: {mode}")
+            
+        result = {
+            "total": kept + modifier,
+            "rolls": [r1, r2],
+            "kept": kept,
+            "modifier": modifier,
+            "die_size": die_size,
+            "type": mode,
+            "is_crit": die_size == 20 and kept == 20,
+            "is_fumble": die_size == 20 and kept == 1
+        }
+        return Dice._validate_roll_result(result)
 
     @staticmethod
     def roll_advantage(die_size: int = 20, modifier: int = 0) -> Dict[str, Any]:
@@ -199,19 +283,7 @@ class Dice:
         Rolls 2 dice and takes the higher value.
         Returns a dict with 'total', 'rolls', and 'modifier'.
         """
-        r1 = random.randint(1, die_size)
-        r2 = random.randint(1, die_size)
-        kept = max(r1, r2)
-        return {
-            "total": kept + modifier,
-            "rolls": [r1, r2],
-            "kept": kept,
-            "modifier": modifier,
-            "die_size": die_size,
-            "type": "advantage",
-            "is_crit": die_size == 20 and kept == 20,
-            "is_fumble": die_size == 20 and kept == 1
-        }
+        return Dice._roll_multi(die_size, modifier, "advantage")
 
     @staticmethod
     def roll_disadvantage(die_size: int = 20, modifier: int = 0) -> Dict[str, Any]:
@@ -219,19 +291,7 @@ class Dice:
         Rolls 2 dice and takes the lower value.
         Returns a dict with 'total', 'rolls', and 'modifier'.
         """
-        r1 = random.randint(1, die_size)
-        r2 = random.randint(1, die_size)
-        kept = min(r1, r2)
-        return {
-            "total": kept + modifier,
-            "rolls": [r1, r2],
-            "kept": kept,
-            "modifier": modifier,
-            "die_size": die_size,
-            "type": "disadvantage",
-            "is_crit": die_size == 20 and kept == 20,
-            "is_fumble": die_size == 20 and kept == 1
-        }
+        return Dice._roll_multi(die_size, modifier, "disadvantage")
         
     @staticmethod
     def check(notation: str, dc: int) -> bool:
@@ -245,6 +305,10 @@ class Dice:
 
 
 class WorldLog:
+    """
+    The central storage and manager for the game world.
+    Handles events, actors, locations, and factions.
+    """
     def __init__(self):
         self.events: Dict[str, Event] = {}
         self.actors: Dict[str, Actor] = {}
@@ -262,6 +326,7 @@ class WorldLog:
         self._chronological_ids: List[str] = []
 
     def add_actor(self, name: str, description: str = "", attributes: Dict = None) -> Actor:
+        """Registers a new actor in the world."""
         if attributes is None:
             attributes = {}
         actor = Actor(name=name, description=description, attributes=attributes)
@@ -269,14 +334,17 @@ class WorldLog:
         return actor
 
     def get_actor(self, name: str) -> Optional[Actor]:
+        """Retrieves an actor by name."""
         return self.actors.get(name)
 
     def get_or_create_faction(self, name: str, description: str = "Unknown") -> Faction:
+        """Retrieves a faction or creates it if it doesn't exist."""
         if name not in self.factions:
             self.factions[name] = Faction(name, description)
         return self.factions[name]
 
     def adjust_faction_standing(self, faction_name: str, amount: int) -> int:
+        """Adjusts the standing with a faction. Clamps between -100 and 100."""
         faction = self.get_or_create_faction(faction_name)
         faction.standing = max(-100, min(100, faction.standing + amount))
         return faction.standing
@@ -313,7 +381,9 @@ class WorldLog:
                   tags: List[str] = None,
                   roll_data: Dict = None,
                   timestamp: datetime = None) -> Event:
-        
+        """
+        Logs a new event to the world history.
+        """
         if actors is None:
             actors = []
         if metadata is None:
@@ -466,12 +536,14 @@ class WorldLog:
     # --- Persistence & REPL Ergonomics ---
 
     def save(self, filepath: str = "campaign.json"):
+        """Saves the current world state to a JSON file."""
         with open(filepath, "w") as f:
             f.write(self.to_json())
         print(f"Game saved to {filepath}")
 
     @classmethod
     def load(cls, filepath: str = "campaign.json") -> 'WorldLog':
+        """Loads the world state from a JSON file."""
         try:
             with open(filepath, "r") as f:
                 print(f"Game loaded from {filepath}")
@@ -480,6 +552,7 @@ class WorldLog:
             print(f"No save found at {filepath}, starting new world.")
             return cls()
 
+    # Shortcuts for REPL usage
     def log(self, *args, **kwargs): return self.log_event(*args, **kwargs)
     def ctx(self, *args, **kwargs): return self.get_context_summary(*args, **kwargs)
     def roll(self, *args, **kwargs): return self.log_roll(*args, **kwargs)
@@ -492,6 +565,9 @@ class WorldLog:
                      tags: Union[str, List[str]] = None,
                      limit: int = None,
                      reverse: bool = False) -> List[Event]:
+        """
+        Flexible query engine for finding events.
+        """
         
         # Normalize inputs to lists
         if isinstance(actors, str):

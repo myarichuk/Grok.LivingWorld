@@ -2,12 +2,14 @@ import unittest
 from unittest.mock import patch
 import sys
 import os
+from datetime import datetime
 
 # Add src to path to allow imports if running directly
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
 from world_log.dice import Dice
 from world_log.storage import WorldLog
+from world_log.models import EventType, AttireItem
 
 class TestDice(unittest.TestCase):
     
@@ -190,6 +192,40 @@ class TestWorldState(unittest.TestCase):
         # Verify log
         last_event = self.world.query_events()[-1]
         self.assertIn("attire: ", last_event.content)
+
+    def test_prune_events(self):
+        """Test pruning of old events."""
+        # Create 10 events
+        for i in range(10):
+            self.world.log_event(f"Event {i}")
+            
+        self.assertEqual(len(self.world.events), 10)
+        
+        # Prune to keep last 3
+        pruned = self.world.prune_events(keep_last=3)
+        
+        self.assertEqual(len(pruned), 7)
+        self.assertEqual(len(self.world.events), 3)
+        self.assertEqual(self.world.query_events()[0].content, "Event 7")
+        
+        # Test summarization
+        self.world.summarize_pruned_events("Stuff happened", pruned)
+        self.assertEqual(len(self.world.events), 4) # 3 kept + 1 summary
+        self.assertEqual(self.world.query_events()[-1].type, EventType.SUMMARY)
+
+    def test_json_serialization(self):
+        """Test saving and loading world state."""
+        self.world.enter_location("City")
+        self.world.log_event("Something happened")
+        self.world.add_actor("Hero")
+        
+        json_str = self.world.to_json()
+        
+        new_world = WorldLog.from_json(json_str)
+        
+        self.assertEqual(new_world.current_location_name, "City")
+        self.assertEqual(len(new_world.events), 2) # Discovery + Event
+        self.assertIsNotNone(new_world.get_actor("Hero"))
 
 if __name__ == '__main__':
     unittest.main()

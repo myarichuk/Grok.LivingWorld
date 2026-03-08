@@ -7,6 +7,10 @@ from collections import defaultdict
 from .models import Event, Actor, Location, Faction, EventType, AttireItem
 
 class WorldLog:
+    """
+    The central storage and manager for the game world.
+    Handles events, actors, locations, and factions.
+    """
     def __init__(self):
         self.events: Dict[str, Event] = {}
         self.actors: Dict[str, Actor] = {}
@@ -24,6 +28,7 @@ class WorldLog:
         self._chronological_ids: List[str] = []
 
     def add_actor(self, name: str, description: str = "", attributes: Dict = None) -> Actor:
+        """Registers a new actor in the world."""
         if attributes is None:
             attributes = {}
         actor = Actor(name=name, description=description, attributes=attributes)
@@ -31,14 +36,17 @@ class WorldLog:
         return actor
 
     def get_actor(self, name: str) -> Optional[Actor]:
+        """Retrieves an actor by name."""
         return self.actors.get(name)
 
     def get_or_create_faction(self, name: str, description: str = "Unknown") -> Faction:
+        """Retrieves a faction or creates it if it doesn't exist."""
         if name not in self.factions:
             self.factions[name] = Faction(name, description)
         return self.factions[name]
 
     def adjust_faction_standing(self, faction_name: str, amount: int) -> int:
+        """Adjusts the standing with a faction. Clamps between -100 and 100."""
         faction = self.get_or_create_faction(faction_name)
         faction.standing = max(-100, min(100, faction.standing + amount))
         return faction.standing
@@ -75,7 +83,9 @@ class WorldLog:
                   tags: List[str] = None,
                   roll_data: Dict = None,
                   timestamp: datetime = None) -> Event:
-        
+        """
+        Logs a new event to the world history.
+        """
         if actors is None:
             actors = []
         if metadata is None:
@@ -228,12 +238,14 @@ class WorldLog:
     # --- Persistence & REPL Ergonomics ---
 
     def save(self, filepath: str = "campaign.json"):
+        """Saves the current world state to a JSON file."""
         with open(filepath, "w") as f:
             f.write(self.to_json())
         print(f"Game saved to {filepath}")
 
     @classmethod
     def load(cls, filepath: str = "campaign.json") -> 'WorldLog':
+        """Loads the world state from a JSON file."""
         try:
             with open(filepath, "r") as f:
                 print(f"Game loaded from {filepath}")
@@ -242,6 +254,7 @@ class WorldLog:
             print(f"No save found at {filepath}, starting new world.")
             return cls()
 
+    # Shortcuts for REPL usage
     def log(self, *args, **kwargs): return self.log_event(*args, **kwargs)
     def ctx(self, *args, **kwargs): return self.get_context_summary(*args, **kwargs)
     def roll(self, *args, **kwargs): return self.log_roll(*args, **kwargs)
@@ -254,6 +267,9 @@ class WorldLog:
                      tags: Union[str, List[str]] = None,
                      limit: int = None,
                      reverse: bool = False) -> List[Event]:
+        """
+        Flexible query engine for finding events.
+        """
         
         # Normalize inputs to lists
         if isinstance(actors, str):

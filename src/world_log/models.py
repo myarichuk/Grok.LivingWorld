@@ -13,6 +13,7 @@ class EventType(Enum):
 
 @dataclass
 class Faction:
+    """Represents a political or social group within the world."""
     name: str
     description: str
     standing: int = 0  # Range: -100 (Nemesis) to 100 (Ally)
@@ -27,6 +28,7 @@ class Faction:
         return cls(**data)
 
     def get_relationship(self) -> str:
+        """Returns a text description of the relationship based on standing."""
         if self.standing >= 80: return "Ally"
         if self.standing >= 20: return "Friendly"
         if self.standing <= -80: return "Nemesis"
@@ -35,6 +37,7 @@ class Faction:
 
 @dataclass
 class AttireItem:
+    """Represents a piece of clothing or equipment worn by an actor."""
     name: str
     tags: Dict[str, Any] = field(default_factory=dict)
 
@@ -88,6 +91,7 @@ class PhysicalState:
 
 @dataclass
 class Actor:
+    """Represents a character or entity in the world."""
     name: str
     description: str = ""
     state: PhysicalState = field(default_factory=PhysicalState)
@@ -104,6 +108,7 @@ class Actor:
 
 @dataclass
 class Location:
+    """Represents a place in the world."""
     name: str
     description: str = ""
     parent_location: Optional[str] = None
@@ -121,6 +126,7 @@ class Location:
 
 @dataclass
 class Event:
+    """Represents a single logged event in the world history."""
     id: str
     turn: int
     type: EventType
