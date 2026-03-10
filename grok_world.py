@@ -309,13 +309,14 @@ class WorldLog:
     The central storage and manager for the game world.
     Handles events, actors, locations, and factions.
     """
-    def __init__(self):
+    def __init__(self, autosave_file: Optional[str] = "campaign.json"):
         self.events: Dict[str, Event] = {}
         self.actors: Dict[str, Actor] = {}
         self.locations: Dict[str, Location] = {}
         self.factions: Dict[str, Faction] = {}
         self.current_location_name: Optional[str] = None
         self.turn_count: int = 0
+        self.autosave_file: Optional[str] = autosave_file
         
         # Indexes
         # These lists store event IDs in insertion order (chronological)
@@ -442,6 +443,9 @@ class WorldLog:
         
         for tag in tags:
             self._events_by_tag[tag].append(event_id)
+
+        if self.autosave_file:
+            self.save(self.autosave_file)
         
         return event
 
@@ -492,6 +496,10 @@ class WorldLog:
                     if isinstance(old_val, list) and not isinstance(value, list):
                         value = [value]
                         
+                    # Normalize Attire inputs if we are touching the attire list
+                    if target_key == "attire":
+                        value = [AttireItem.from_mixed(v) for v in (value if isinstance(value, list) else [value])]
+
                     if old_val != value:
                         setattr(actor.state, target_key, value)
                         changes.append(f"{target_key}: {old_val} -> {value}")
@@ -530,6 +538,7 @@ class WorldLog:
             content = f"State update for {actor_name}: {', '.join(changes)}"
             if reason:
                 content += f" ({reason})"
+            # self.log_event already triggers autosave, so no need to do it twice
             return self.log_event(content, type=EventType.SYSTEM, actors=[actor_name], tags=["state_change"])
         return None
 
@@ -547,10 +556,10 @@ class WorldLog:
         try:
             with open(filepath, "r") as f:
                 print(f"Game loaded from {filepath}")
-                return cls.from_json(f.read())
+                return cls.from_json(f.read(), autosave_file=filepath)
         except FileNotFoundError:
             print(f"No save found at {filepath}, starting new world.")
-            return cls()
+            return cls(autosave_file=filepath)
 
     # Shortcuts for REPL usage
     def log(self, *args, **kwargs): return self.log_event(*args, **kwargs)
@@ -688,10 +697,10 @@ class WorldLog:
         return json.dumps(data, indent=2)
 
     @classmethod
-    def from_json(cls, json_str: str) -> 'WorldLog':
+    def from_json(cls, json_str: str, autosave_file: Optional[str] = "campaign.json") -> 'WorldLog':
         """Deserializes a WorldLog from a JSON string."""
         data = json.loads(json_str)
-        world = cls()
+        world = cls(autosave_file=None) # Start with None to avoid disk writes during the load process
         world.current_location_name = data.get("current_location")
         world.turn_count = data.get("turn_count", 0)
         
@@ -729,6 +738,8 @@ class WorldLog:
             for tag in event.tags:
                 world._events_by_tag[tag].append(event.id)
                 
+        # Re-enable autosave now that loading is complete
+        world.autosave_file = autosave_file
         return world
 
     def prune_events(self, keep_last: int = 100) -> List[Event]:

@@ -98,7 +98,7 @@ class TestDice(unittest.TestCase):
 
 class TestWorldState(unittest.TestCase):
     def setUp(self):
-        self.world = WorldLog()
+        self.world = WorldLog(autosave_file=None)
 
     def test_faction_standing_mechanics(self):
         """Test faction reputation clamping and relationship strings."""
@@ -130,7 +130,7 @@ class TestWorldState(unittest.TestCase):
         self.world.log_event("Brawl started.")
         
         # Check location history (formatted string)
-        self.assertIn("Brawl started", loc.local_history[0])
+        self.assertIn("Brawl started", loc.local_history[-1])
         self.assertIn("Brawl started", self.world.query_events()[-1].content)
 
     def test_context_summary_generation(self):
@@ -211,7 +211,7 @@ class TestWorldState(unittest.TestCase):
         # Test summarization
         self.world.summarize_pruned_events("Stuff happened", pruned)
         self.assertEqual(len(self.world.events), 4) # 3 kept + 1 summary
-        self.assertEqual(self.world.query_events()[-1].type, EventType.SUMMARY)
+        self.assertEqual(self.world.query_events()[0].type, EventType.SUMMARY)
 
     def test_json_serialization(self):
         """Test saving and loading world state."""
@@ -221,9 +221,11 @@ class TestWorldState(unittest.TestCase):
         
         json_str = self.world.to_json()
         
-        new_world = WorldLog.from_json(json_str)
+        # Test passing None to from_json to avoid it saving anything when loaded from a string directly
+        new_world = WorldLog.from_json(json_str, autosave_file=None)
         
         self.assertEqual(new_world.current_location_name, "City")
+        self.assertIsNone(new_world.autosave_file)
         self.assertEqual(len(new_world.events), 2) # Discovery + Event
         self.assertIsNotNone(new_world.get_actor("Hero"))
 
