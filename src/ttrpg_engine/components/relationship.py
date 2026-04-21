@@ -24,18 +24,3 @@ class RelationshipMemoryLink:
 
     source_actor_entity_id: int
     target_actor_entity_id: int
-
-
-EXAMPLE_USAGE = """
-Example:
-    from ecs import World
-    from ttrpg_engine.components.relationship import (
-        RelationshipMemory,
-        RelationshipMemoryLink,
-    )
-
-    world = World(enable_storage=False)
-    edge = world.create_entity()
-    world.add_component(edge, RelationshipMemoryLink(1, 2))
-    world.add_component(edge, RelationshipMemory(trust=20, affection=10))
-"""

@@ -64,6 +64,11 @@ from ttrpg_engine.components.relationship import (
     RelationshipMemoryLink,
 )
 from ttrpg_engine.components.status import StatusEffect, StatusEffectTarget
+from ttrpg_engine.components.object import (
+    Object,
+    ObjectState,
+    InteractWithObjectCommand,
+)
 
 __all__ = [
     "ActorAgency",
@@ -88,6 +93,7 @@ __all__ = [
     "FactionTraits",
     "GrandPlanClock",
     "InitiativeState",
+    "InteractWithObjectCommand",
     "KernelState",
     "LLMActorRegistrationCommand",
     "LLMFactionUpdateCommand",
@@ -108,6 +114,8 @@ __all__ = [
     "NeedsLLMFill",
     "NpcLifecycle",
     "NpcResidencyType",
+    "Object",
+    "ObjectState",
     "PlayerActor",
     "RelationshipBucket",
     "RelationshipEdge",

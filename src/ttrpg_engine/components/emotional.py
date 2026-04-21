@@ -11,7 +11,7 @@ class EmotionalState:
 
     morale: int = 50
     stress: int = 0
-    dominant_emotion: str = "steady"
+    dominant_emotion: str = "neutral"
     affection: dict[int, int] = field(default_factory=dict)
     fear: dict[int, int] = field(default_factory=dict)
     anger: dict[int, int] = field(default_factory=dict)
@@ -38,14 +38,3 @@ def _top_feelings(values: dict[int, int], limit: int = 3) -> tuple[dict[str, int
         {"actor_entity_id": actor_entity_id, "value": value}
         for actor_entity_id, value in ranked[: max(0, limit)]
     )
-
-
-EXAMPLE_USAGE = """
-Example:
-    from ecs import World
-    from ttrpg_engine.components.emotional import EmotionalState
-
-    world = World(enable_storage=False)
-    actor = world.create_entity()
-    world.add_component(actor, EmotionalState(morale=60, stress=15))
-"""

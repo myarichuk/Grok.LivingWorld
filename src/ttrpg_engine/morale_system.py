@@ -15,6 +15,7 @@ from ttrpg_engine.components.relationship import (
     RelationshipMemoryLink,
 )
 from ttrpg_engine.components.status import StatusEffect, StatusEffectTarget
+from ttrpg_engine.components.object import Object, ObjectState
 from ttrpg_engine.events import (
     EmotionalStateChangedEvent,
     RelationshipMemoryUpdatedEvent,
@@ -75,8 +76,6 @@ class MoraleSystem:
             )
             thresholds.extend(threshold_updates)
 
-            _compact_short_term_memory(world, actor_entity, turn_id)
-
         return SystemResult(
             self.name,
             len(entities),
@@ -126,40 +125,30 @@ class StatusEffectSystem:
 def apply_emotional_change(
     world: World,
     actor_id: int,
+    *,
     morale_delta: int = 0,
     stress_delta: int = 0,
-    affection_delta: int | dict[int, int] | None = None,
-    fear_delta: int | dict[int, int] | None = None,
-    anger_delta: int | dict[int, int] | None = None,
-    trust_delta: int | dict[int, int] | None = None,
-    loyalty_delta: int | dict[int, int] | None = None,
+    affection_delta: dict[int, int] | None = None,
+    fear_delta: dict[int, int] | None = None,
+    anger_delta: dict[int, int] | None = None,
+    trust_delta: dict[int, int] | None = None,
+    loyalty_delta: dict[int, int] | None = None,
     reason: str = "",
-) -> EmotionalState:
-    """Apply direct emotional deltas to an actor.
-
-    Scalar directed-emotion deltas are tracked against the actor's own entity id so
-    the LLM can call a simple hook without constructing per-target maps.
-    """
+) -> None:
+    """LLM calls this when something emotionally significant happens."""
     state = get_emotional_state(world, actor_id)
+    if state is None:
+        state = EmotionalState()
+
     next_state = replace(
         state,
         morale=_clamp_0_100(state.morale + morale_delta),
         stress=_clamp_0_100(state.stress + stress_delta),
-        affection=_apply_directed_delta_map(
-            state.affection, actor_id, affection_delta, min_value=-100, max_value=100
-        ),
-        fear=_apply_directed_delta_map(
-            state.fear, actor_id, fear_delta, min_value=-100, max_value=100
-        ),
-        anger=_apply_directed_delta_map(
-            state.anger, actor_id, anger_delta, min_value=-100, max_value=100
-        ),
-        trust=_apply_directed_delta_map(
-            state.trust, actor_id, trust_delta, min_value=-100, max_value=100
-        ),
-        loyalty=_apply_directed_delta_map(
-            state.loyalty, actor_id, loyalty_delta, min_value=-100, max_value=100
-        ),
+        affection=_apply_directed_delta_map(state.affection, affection_delta),
+        fear=_apply_directed_delta_map(state.fear, fear_delta),
+        anger=_apply_directed_delta_map(state.anger, anger_delta),
+        trust=_apply_directed_delta_map(state.trust, trust_delta),
+        loyalty=_apply_directed_delta_map(state.loyalty, loyalty_delta),
         dominant_emotion=_resolve_dominant_emotion(
             state=state,
             affection_delta=affection_delta,
@@ -170,16 +159,10 @@ def apply_emotional_change(
         ),
     )
     world.add_component(actor_id, next_state)
-    _append_actor_memory(
+    _append_actor_short_term_memory(
         world=world,
         actor_id=actor_id,
-        memory={
-            "turn": _current_turn(world),
-            "kind": "emotional_change",
-            "description": reason.strip() or "emotional state shifted",
-            "morale_delta": morale_delta,
-            "stress_delta": stress_delta,
-        },
+        memory=reason.strip() or "emotional state shifted",
     )
     world.publish(
         EmotionalStateChangedEvent(
@@ -199,28 +182,37 @@ def apply_emotional_change(
         turn_id=_current_turn(world),
         source="apply_emotional_change",
     )
-    return next_state
 
 
 def apply_relationship_change(
     world: World,
     source_id: int,
     target_id: int,
+    *,
     trust_delta: int = 0,
     affection_delta: int = 0,
     fear_delta: int = 0,
+    resentment_delta: int = 0,
+    key_event: str | None = None,
     reason: str = "",
-) -> RelationshipMemory:
-    """Apply directed relationship changes and synchronize emotional overlays."""
+) -> None:
+    """LLM calls this to update how one actor feels about another."""
     relationship_entity = _get_or_create_relationship_memory_entity(
         world=world,
         source_id=source_id,
         target_id=target_id,
     )
     memory = world.get_component(relationship_entity, RelationshipMemory)
-    resentment_delta = 0
-    if trust_delta < 0 or affection_delta < 0:
-        resentment_delta = abs(min(trust_delta, 0)) + abs(min(affection_delta, 0))
+
+    events = memory.key_events
+    if key_event:
+        events = events + (
+            {
+                "turn": _current_turn(world),
+                "description": key_event,
+                "emotional_impact": reason.strip(),
+            },
+        )
 
     next_memory = replace(
         memory,
@@ -228,28 +220,16 @@ def apply_relationship_change(
         affection=_clamp_signed(memory.affection + affection_delta),
         fear=_clamp_signed(memory.fear + fear_delta),
         resentment=_clamp_signed(memory.resentment + resentment_delta),
-        key_events=memory.key_events
-        + (
-            {
-                "turn": _current_turn(world),
-                "description": reason.strip() or "relationship shifted",
-                "emotional_impact": {
-                    "trust_delta": trust_delta,
-                    "affection_delta": affection_delta,
-                    "fear_delta": fear_delta,
-                    "resentment_delta": resentment_delta,
-                },
-            },
-        ),
+        key_events=events,
         last_meaningful_interaction_turn=_current_turn(world),
     )
     world.add_component(relationship_entity, next_memory)
     apply_emotional_change(
         world=world,
         actor_id=source_id,
-        trust_delta={target_id: trust_delta},
-        affection_delta={target_id: affection_delta},
-        fear_delta={target_id: fear_delta},
+        trust_delta={target_id: trust_delta} if trust_delta else None,
+        affection_delta={target_id: affection_delta} if affection_delta else None,
+        fear_delta={target_id: fear_delta} if fear_delta else None,
         reason=reason,
     )
     world.publish(
@@ -265,21 +245,21 @@ def apply_relationship_change(
             source="apply_relationship_change",
         )
     )
-    return next_memory
 
 
-def get_emotional_state(world: World, actor_id: int) -> EmotionalState:
-    """Return an actor emotional state, creating a default state when absent."""
+def get_emotional_state(world: World, actor_id: int) -> EmotionalState | None:
+    """Return an actor emotional state, returning None when absent."""
     if world.has_component(actor_id, EmotionalState):
         return world.get_component(actor_id, EmotionalState)
-    state = EmotionalState()
-    world.add_component(actor_id, state)
-    return state
+    return None
 
 
 def get_morale(world: World, actor_id: int) -> int:
     """Return the current morale score for an actor."""
-    return get_emotional_state(world, actor_id).morale
+    state = get_emotional_state(world, actor_id)
+    if state:
+        return state.morale
+    return 50
 
 
 def get_relationship_memory(
@@ -292,9 +272,9 @@ def get_relationship_memory(
     return world.get_component(entity, RelationshipMemory)
 
 
-def get_actor_emotional_summary(world: World, actor_id: int) -> dict[str, object]:
+def get_actor_emotional_summary(world: World, actor_id: int) -> dict[str, Any]:
     """Return rich emotional state, relationship overlays, and statuses for an actor."""
-    emotional_state = get_emotional_state(world, actor_id)
+    emotional_state = get_emotional_state(world, actor_id) or EmotionalState()
     statuses = _status_effect_summaries(world, actor_id)
     relationships = tuple(
         {
@@ -315,7 +295,7 @@ def get_actor_emotional_summary(world: World, actor_id: int) -> dict[str, object
     }
 
 
-def get_actor_full_summary(world: World, actor_id: int) -> dict[str, object]:
+def get_actor_full_summary(world: World, actor_id: int) -> dict[str, Any]:
     """Return a rich summary for prompting, inspection, and memory retrieval."""
     emotional = get_actor_emotional_summary(world, actor_id)
     actor_memory = _get_actor_memory(world, actor_id)
@@ -340,12 +320,60 @@ def get_actor_full_summary(world: World, actor_id: int) -> dict[str, object]:
         "distance_bucket": distance_bucket,
         "emotional": emotional,
         "memory": {
-            "short_term_memories": actor_memory.short_term_memories,
-            "long_term_memories": actor_memory.long_term_memories,
+            "short_term": actor_memory.short_term,
+            "long_term": actor_memory.long_term,
             "beliefs_about": actor_memory.beliefs_about,
             "known_secrets": actor_memory.known_secrets,
         },
     }
+
+
+def get_objects_in_scene(world: World, scene_id: str) -> list[int]:
+    """Return entity IDs for all objects in the specified scene."""
+    objects = []
+    for entity in world.query(EntityQuery(all_of=(Object, ScenePosition))):
+        pos = world.get_component(entity, ScenePosition)
+        if pos.scene_id == scene_id:
+            objects.append(entity)
+    return objects
+
+
+def get_objects_near_actor(world: World, actor_id: int, max_distance: str = "near") -> list[int]:
+    """Return objects in the same scene and zone up to the max distance."""
+    if not world.has_component(actor_id, ScenePosition):
+        return []
+    
+    actor_pos = world.get_component(actor_id, ScenePosition)
+    scene_objects = get_objects_in_scene(world, actor_pos.scene_id)
+    
+    near_objects = []
+    for obj_id in scene_objects:
+        obj_pos = world.get_component(obj_id, ScenePosition)
+        if obj_pos.zone == actor_pos.zone:
+            # We treat everything in the same zone as 'near' enough for simple checks.
+            near_objects.append(obj_id)
+            
+    return near_objects
+
+
+def can_actor_use_object_for_cover(world: World, actor_id: int, object_id: int) -> bool:
+    """Return whether an actor is near an object that provides cover."""
+    if not world.has_component(object_id, ObjectState):
+        return False
+    state = world.get_component(object_id, ObjectState)
+    if not state.provides_cover:
+        return False
+    
+    if not world.has_component(actor_id, ScenePosition) or not world.has_component(object_id, ScenePosition):
+        return False
+        
+    actor_pos = world.get_component(actor_id, ScenePosition)
+    obj_pos = world.get_component(object_id, ScenePosition)
+    
+    if actor_pos.scene_id == obj_pos.scene_id and actor_pos.zone == obj_pos.zone:
+        return True
+        
+    return False
 
 
 def _apply_morale_threshold_effects(
@@ -538,60 +566,32 @@ def _get_actor_memory(world: World, actor_id: int) -> ActorMemory:
     return memory
 
 
-def _append_actor_memory(
-    world: World, actor_id: int, memory: dict[str, Any], short_term_limit: int = 8
+def _append_actor_short_term_memory(
+    world: World, actor_id: int, memory: str, short_term_limit: int = 8
 ) -> None:
     actor_memory = _get_actor_memory(world, actor_id)
-    short_term = actor_memory.short_term_memories + (dict(memory),)
+    short_term = actor_memory.short_term + (memory,)
     if len(short_term) > short_term_limit:
-        promoted = short_term[0]
-        short_term = short_term[1:]
-        long_term = actor_memory.long_term_memories + (promoted,)
-    else:
-        long_term = actor_memory.long_term_memories
+        short_term = short_term[-short_term_limit:]
 
     world.add_component(
         actor_id,
         replace(
             actor_memory,
-            short_term_memories=short_term,
-            long_term_memories=long_term,
-        ),
-    )
-
-
-def _compact_short_term_memory(world: World, actor_id: int, turn_id: int) -> None:
-    actor_memory = _get_actor_memory(world, actor_id)
-    if len(actor_memory.short_term_memories) <= 8:
-        return
-    promoted = actor_memory.short_term_memories[0]
-    updated_promoted = dict(promoted)
-    updated_promoted.setdefault("promoted_turn", turn_id)
-    world.add_component(
-        actor_id,
-        replace(
-            actor_memory,
-            short_term_memories=actor_memory.short_term_memories[1:],
-            long_term_memories=actor_memory.long_term_memories + (updated_promoted,),
+            short_term=short_term,
         ),
     )
 
 
 def _apply_directed_delta_map(
     values: dict[int, int],
-    actor_id: int,
-    delta: int | dict[int, int] | None,
-    min_value: int,
-    max_value: int,
+    delta: dict[int, int] | None,
+    min_value: int = -100,
+    max_value: int = 100,
 ) -> dict[int, int]:
-    next_values = dict(values)
     if delta is None:
-        return next_values
-    if isinstance(delta, int):
-        if delta == 0:
-            return next_values
-        next_values[actor_id] = _clamp(next_values.get(actor_id, 0) + delta, min_value, max_value)
-        return next_values
+        return dict(values)
+    next_values = dict(values)
     for target_id, change in delta.items():
         next_values[int(target_id)] = _clamp(
             next_values.get(int(target_id), 0) + int(change),
@@ -603,11 +603,11 @@ def _apply_directed_delta_map(
 
 def _resolve_dominant_emotion(
     state: EmotionalState,
-    affection_delta: int | dict[int, int] | None,
-    fear_delta: int | dict[int, int] | None,
-    anger_delta: int | dict[int, int] | None,
-    trust_delta: int | dict[int, int] | None,
-    loyalty_delta: int | dict[int, int] | None,
+    affection_delta: dict[int, int] | None,
+    fear_delta: dict[int, int] | None,
+    anger_delta: dict[int, int] | None,
+    trust_delta: dict[int, int] | None,
+    loyalty_delta: dict[int, int] | None,
 ) -> str:
     candidates = {
         "affection": _delta_strength(affection_delta),
@@ -622,11 +622,9 @@ def _resolve_dominant_emotion(
     return emotion
 
 
-def _delta_strength(delta: int | dict[int, int] | None) -> int:
+def _delta_strength(delta: dict[int, int] | None) -> int:
     if delta is None:
         return 0
-    if isinstance(delta, int):
-        return abs(delta)
     return max((abs(int(value)) for value in delta.values()), default=0)
 
 
@@ -658,28 +656,43 @@ def _clamp_signed(value: int) -> int:
 
 
 EXAMPLE_USAGE = """
-Example:
-    from ecs import World
-    from ttrpg_engine.components.emotional import EmotionalState
+Example Usage for the LLM:
+
     from ttrpg_engine.morale_system import (
-        MoraleSystem,
         apply_emotional_change,
         apply_relationship_change,
         get_actor_full_summary,
+        get_objects_near_actor,
+        can_actor_use_object_for_cover,
     )
-
-    world = World(enable_storage=False)
-    actor = world.create_entity()
-    world.add_component(actor, EmotionalState())
-
+    
+    # 1. The LLM decides the NPC is terrified of the player
     apply_emotional_change(
         world,
-        actor,
-        morale_delta=-25,
-        fear_delta=15,
-        reason="Player betrayed her",
+        npc_actor_id,
+        stress_delta=20,
+        fear_delta={player_actor_id: 30},
+        reason="The player drew a cursed blade."
     )
-    apply_relationship_change(world, actor, 99, trust_delta=-30, reason="Broken oath")
-    summary = get_actor_full_summary(world, actor)
-    MoraleSystem().run(world, [])
+    
+    # 2. The LLM decides the NPC resents the player for destroying their work
+    apply_relationship_change(
+        world,
+        npc_actor_id,
+        player_actor_id,
+        trust_delta=-50,
+        resentment_delta=40,
+        key_event="Player smashed the magic mirror.",
+        reason="My life's work is ruined!"
+    )
+    
+    # 3. Spatial reasoning during a scene:
+    objects_near_npc = get_objects_near_actor(world, npc_actor_id, "near")
+    for obj_id in objects_near_npc:
+        if can_actor_use_object_for_cover(world, npc_actor_id, obj_id):
+            # NPC cowers behind it!
+            break
+            
+    # 4. Context building for prompt generation:
+    context = get_actor_full_summary(world, npc_actor_id)
 """
