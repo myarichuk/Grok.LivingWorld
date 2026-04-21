@@ -15,6 +15,7 @@ from typing import Any
 
 _TOKEN_PATTERN = re.compile(r"[a-z0-9_']+")
 _INDEX_FIELDS = (
+    "kind",
     "text",
     "description",
     "event",
@@ -23,6 +24,10 @@ _INDEX_FIELDS = (
     "impulse",
     "zone",
     "scene_id",
+    "event_type",
+    "component_type",
+    "tags",
+    "query_tags",
 )
 _COMPRESSED_FIELD = "__payload_zlib_b64__"
 _DOC_COMPRESSED_FIELD = "__doc_zlib_b64__"
@@ -147,6 +152,7 @@ class WorldDB:
             doc = self._decode_doc_for_runtime(loaded)
             key = self._extract_key(doc)
             if key is None:
+                self._corrupt_lines += 1
                 continue
 
             self._apply_doc(key, doc)
@@ -179,7 +185,43 @@ class WorldDB:
                     if isinstance(item, str):
                         terms.update(_TOKEN_PATTERN.findall(item.lower()))
 
+        self._collect_payload_terms(doc.get("payload"), terms)
         return terms
+
+    def _collect_payload_terms(self, value: Any, terms: set[str], depth: int = 0) -> None:
+        """Extract searchable tokens from persisted payload blobs.
+
+        This is critical for campaign "memory" because ECS-persisted events/components
+        store most narrative content under ``payload``.
+        """
+        if value is None:
+            return
+        if depth >= 5:
+            return
+        if isinstance(value, str):
+            terms.update(_TOKEN_PATTERN.findall(value.lower()))
+            return
+        if isinstance(value, (int, float, bool)):
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                self._collect_payload_terms(item, terms, depth + 1)
+            return
+        if isinstance(value, dict):
+            # ECS encoder uses these markers; treat them as structural wrappers.
+            if "__enum__" in value and "value" in value:
+                self._collect_payload_terms(value.get("value"), terms, depth + 1)
+                return
+            if "__dataclass__" in value and "fields" in value:
+                self._collect_payload_terms(value.get("fields"), terms, depth + 1)
+                return
+            if "__tuple__" in value:
+                self._collect_payload_terms(value.get("__tuple__"), terms, depth + 1)
+                return
+            for item in value.values():
+                self._collect_payload_terms(item, terms, depth + 1)
+            return
+
 
     def _index_doc(self, key: str, doc: dict[str, Any]) -> None:
         for term in self._doc_terms(doc):
@@ -306,11 +348,18 @@ class WorldDB:
             if "id" not in runtime_doc:
                 runtime_doc["id"] = str(self._next_id)
                 self._next_id += 1
+
             key = str(runtime_doc["id"])
+            if key.isdigit():
+                self._next_id = max(self._next_id, int(key) + 1)
             storage_doc = self._encode_doc_for_storage(runtime_doc)
-            encoded_lines.append(
-                (json.dumps(storage_doc, ensure_ascii=False) + "\n").encode("utf-8")
-            )
+            try:
+                encoded_json = json.dumps(storage_doc, ensure_ascii=False)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"WorldDB documents must be JSON-serializable; key={key}"
+                ) from exc
+            encoded_lines.append((encoded_json + "\n").encode("utf-8"))
             runtime_docs.append(runtime_doc)
             keys.append(key)
 
@@ -430,7 +479,7 @@ class WorldDB:
 
         result_set: set[str] | None = None
 
-        for term in must_terms:
+        for term in sorted(must_terms, key=lambda item: len(self._index.get(item, []))):
             term_keys = self._index.get(term)
             if not term_keys:
                 return []

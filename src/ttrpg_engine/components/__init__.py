@@ -56,7 +56,14 @@ from ttrpg_engine.components.location import (
     MoveActorLocationCommand,
     RegisterActorLocationCommand,
 )
+from ttrpg_engine.components.emotional import EmotionalState
+from ttrpg_engine.components.memory import ActorMemory
 from ttrpg_engine.components.player import PlayerActor
+from ttrpg_engine.components.relationship import (
+    RelationshipMemory,
+    RelationshipMemoryLink,
+)
+from ttrpg_engine.components.status import StatusEffect, StatusEffectTarget
 
 __all__ = [
     "ActorAgency",
@@ -70,6 +77,7 @@ __all__ = [
     "ActorImpulse",
     "CurrentAction",
     "DistanceBucket",
+    "EmotionalState",
     "EndTurnCommand",
     "Faction",
     "FactionFlags",
@@ -88,6 +96,7 @@ __all__ = [
     "Location",
     "LocationIndex",
     "LocationOccupancy",
+    "ActorMemory",
     "LongTermGoals",
     "LLMQueryTransientInteractionsCommand",
     "LLMRelationshipQueryCommand",
@@ -102,12 +111,16 @@ __all__ = [
     "PlayerActor",
     "RelationshipBucket",
     "RelationshipEdge",
+    "RelationshipMemory",
+    "RelationshipMemoryLink",
     "RegisterActorLocationCommand",
     "RequestRegistry",
     "ResolvedLLMResult",
     "ScenePosition",
     "ScenePresence",
     "StartTurnCommand",
+    "StatusEffect",
+    "StatusEffectTarget",
     "TurnPhase",
     "LLMTransientInteractionQueryResult",
 ]

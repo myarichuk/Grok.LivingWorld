@@ -103,3 +103,44 @@ class RelationshipEdgeUpdatedEvent:
     tags: tuple[str, ...]
     turn_id: int
     source: str
+
+
+@dataclass(frozen=True)
+class EmotionalStateChangedEvent:
+    actor_entity_id: int
+    morale: int
+    stress: int
+    dominant_emotion: str
+    reason: str
+    turn_id: int
+    source: str
+
+
+@dataclass(frozen=True)
+class RelationshipMemoryUpdatedEvent:
+    source_actor_entity_id: int
+    target_actor_entity_id: int
+    trust: int
+    affection: int
+    fear: int
+    resentment: int
+    turn_id: int
+    reason: str
+    source: str
+
+
+@dataclass(frozen=True)
+class StatusEffectAppliedEvent:
+    actor_entity_id: int
+    effect_name: str
+    magnitude: int
+    turn_id: int
+    source: str
+
+
+@dataclass(frozen=True)
+class StatusEffectExpiredEvent:
+    actor_entity_id: int
+    effect_name: str
+    turn_id: int
+    source: str

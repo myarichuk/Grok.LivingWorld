@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import ast
 import pathlib
+import subprocess
+import sys
 
 SUSPICIOUS_SNIPPETS = (
     'text"""',
@@ -163,16 +165,18 @@ def _render_unified_runtime(
             "    return World(storage_path=configured_path, **kwargs)",
             "",
             "",
-            "if WORLD_DB_ENV_VAR not in os.environ:",
-            "    configure_world_db()",
-            "",
-            "",
             "def install_importer() -> None:",
             "    global _FINDER",
             "    if _FINDER is not None:",
             "        return",
             "    _FINDER = _UnifiedSourceFinder()",
             "    sys.meta_path.insert(0, _FINDER)",
+            "",
+            "",
+            "# Make the unified runtime REPL-friendly: importing this module is enough.",
+            "install_importer()",
+            "if WORLD_DB_ENV_VAR not in os.environ:",
+            "    configure_world_db()",
             "",
             "",
             "def check_imports() -> None:",
@@ -236,6 +240,20 @@ def main() -> int:
 
     placeholder_db_path = output_path.parent / "world.ecs.db"
     placeholder_db_path.touch(exist_ok=True)
+
+    # Mandatory self-check: ensure unified runtime imports all embedded modules.
+    subprocess.run(
+        [
+            sys.executable,
+            str(output_path),
+            "--check",
+            "--check-all",
+            "--world-db",
+            str(placeholder_db_path),
+        ],
+        cwd=str(output_path.parent),
+        check=True,
+    )
 
     print(f"unified_path={output_path}")
     print(f"placeholder_db={placeholder_db_path}")

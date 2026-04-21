@@ -181,7 +181,7 @@ CommitTurnSystem().run(world, [kernel])
 
 ```bash
 ruff check .
-pytest
+pytest --cov=src --cov-report=term-missing
 ```
 
 ## Grok REPL Troubleshooting
@@ -192,27 +192,9 @@ If Grok reports `ModuleNotFoundError: No module named 'ttrpg_engine'`:
 PYTHONPATH=src python -c "from ecs import World; import ttrpg_engine; print('ok')"
 ```
 
-If Grok session files were partially written/truncated, run:
+The previous REPL repair scripts referenced here are no longer part of the
+repository. Use the test suite instead for integrity checks:
 
 ```bash
-python scripts/grok_repl_doctor.py
-```
-
-The doctor script validates that `src` is on `sys.path` and that core modules import
-cleanly before you run turn logic.
-
-To detect escaped/corrupted source blobs after a deploy/fetch step, run:
-
-```bash
-python scripts/check_source_integrity.py
-```
-
-This catches patterns like `text"""...`, `\__all__`, and single-line escaped source.
-
-If those checks fail due to escaped package entrypoints, run:
-
-```bash
-python scripts/repair_escaped_init_files.py
-python scripts/check_source_integrity.py
-python scripts/grok_repl_doctor.py
+pytest tests/test_source_integrity.py
 ```

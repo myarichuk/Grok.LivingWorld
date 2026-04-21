@@ -20,7 +20,7 @@ def test_world_db_append_get_query_and_mmap_fetch(tmp_path: Path) -> None:
             {
                 "turn": 2,
                 "event": "Barkeep greets",
-                "text": "whatll it be stranger",
+                "text": "what'll it be stranger",
                 "description": "friendly barkeep at tavern counter",
             }
         )

@@ -219,3 +219,23 @@ def test_promote_transient_and_persist_relationship_graph(tmp_path: Path) -> Non
     reloaded_npc_lifecycle = world_reloaded.get_component(npc, NpcLifecycle)
     assert str(reloaded_npc_lifecycle.residency_type) == "persistent"
     world_reloaded.close()
+
+
+def test_relationship_query_rejects_unknown_bucket_filter() -> None:
+    world = World()
+    player = world.create_entity()
+    command = world.create_entity()
+
+    world.add_component(
+        command,
+        LLMRelationshipQueryCommand(
+            actor_entity_id=player,
+            bucket="best_friend_forever",
+        ),
+    )
+
+    result = LLMRelationshipQuerySystem().run(world, [command])
+    result_entity = result.payload["results"][0]["result_entity"]
+    query_result = world.get_component(result_entity, LLMRelationshipQueryResult)
+
+    assert query_result.edges == ()

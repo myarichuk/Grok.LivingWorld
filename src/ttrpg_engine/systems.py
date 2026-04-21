@@ -106,6 +106,11 @@ class StartTurnSystem:
             state = world.get_component(command_entity, KernelState)
             registry = world.get_component(command_entity, RequestRegistry)
             command = world.get_component(command_entity, StartTurnCommand)
+            request_type = (
+                command.request_type.strip()
+                if isinstance(command.request_type, str)
+                else ""
+            )
 
             if state.phase != TurnPhase.IDLE:
                 rejected.append(
@@ -116,11 +121,20 @@ class StartTurnSystem:
                 )
                 world.remove_component(command_entity, StartTurnCommand)
                 continue
+            if not request_type:
+                rejected.append(
+                    {
+                        "kernel_entity": command_entity,
+                        "reason": "request_type must not be blank",
+                    }
+                )
+                world.remove_component(command_entity, StartTurnCommand)
+                continue
 
             next_turn_id = state.turn_id + 1
             request_id = _next_request_id(
                 turn_id=next_turn_id,
-                request_type=command.request_type,
+                request_type=request_type,
                 existing_ids=set(registry.pending_request_ids)
                 | set(registry.applied_request_ids),
             )
@@ -131,7 +145,7 @@ class StartTurnSystem:
                 NeedsLLMFill(
                     request_id=request_id,
                     turn_id=next_turn_id,
-                    request_type=command.request_type,
+                    request_type=request_type,
                     context=command.context,
                     schema=command.schema,
                     schema_version=command.schema_version,
@@ -229,16 +243,16 @@ class ApplyLLMResponseSystem:
                 continue
 
             request_entity, request = request_ref
-            missing_keys = _missing_required_keys(
+            schema_errors = _schema_validation_errors(
                 payload=response.payload,
                 schema=request.schema,
             )
-            if missing_keys:
+            if schema_errors:
                 rejected.append(
                     {
                         "kernel_entity": response_entity,
                         "request_id": response.request_id,
-                        "reason": f"payload missing required keys: {missing_keys}",
+                        "reason": f"payload schema validation failed: {schema_errors}",
                     }
                 )
                 world.remove_component(response_entity, LLMResponse)
@@ -401,8 +415,19 @@ class LocationRegistrationSystem:
                 world.remove_component(command_entity, RegisterActorLocationCommand)
                 continue
 
+            to_scene = command.scene_id.strip()
+            if not to_scene:
+                rejected.append(
+                    {
+                        "command_entity": command_entity,
+                        "actor_entity": actor_entity,
+                        "reason": "scene_id must not be blank",
+                    }
+                )
+                world.remove_component(command_entity, RegisterActorLocationCommand)
+                continue
+
             from_scene = _get_actor_scene_id(world, actor_entity)
-            to_scene = command.scene_id
             zone = command.zone.strip() or "default"
             bucket = _parse_distance_bucket(command.distance_bucket)
 
@@ -472,7 +497,18 @@ class ActorLocationChangeSystem:
                 continue
 
             from_scene = _get_actor_scene_id(world, actor_entity)
-            to_scene = command.to_scene_id
+            to_scene = command.to_scene_id.strip()
+            if not to_scene:
+                rejected.append(
+                    {
+                        "command_entity": command_entity,
+                        "actor_entity": actor_entity,
+                        "reason": "destination scene_id must not be blank",
+                    }
+                )
+                world.remove_component(command_entity, MoveActorLocationCommand)
+                continue
+
             zone = command.to_zone.strip() or "default"
             bucket = _parse_distance_bucket(command.to_distance_bucket)
 
@@ -756,15 +792,33 @@ class LLMActorGatewaySystem:
         )
 
         registered: list[dict[str, object]] = []
+        rejected: list[dict[str, object]] = []
         for command_entity in entities:
             command = world.get_component(command_entity, LLMActorRegistrationCommand)
+            actor_name = (
+                command.actor_name.strip()
+                if isinstance(command.actor_name, str)
+                else ""
+            )
+            scene_id = (
+                command.scene_id.strip() if isinstance(command.scene_id, str) else ""
+            )
+            if not actor_name or not scene_id:
+                rejected.append(
+                    {
+                        "command_entity": command_entity,
+                        "reason": "actor_name and scene_id must not be blank",
+                    }
+                )
+                world.remove_component(command_entity, LLMActorRegistrationCommand)
+                continue
 
             actor_entity = command.actor_entity_id
             if actor_entity is None:
                 actor_entity = world.create_entity()
                 world.add_component(
                     actor_entity,
-                    NarrativeActor(name=command.actor_name, kind=command.actor_kind),
+                    NarrativeActor(name=actor_name, kind=command.actor_kind),
                 )
 
             sanitized_relations = _sanitize_faction_relations(command.faction_relations)
@@ -778,7 +832,7 @@ class LLMActorGatewaySystem:
             from_scene = _assign_actor_location(
                 world=world,
                 actor_entity=actor_entity,
-                to_scene_id=command.scene_id,
+                to_scene_id=scene_id,
                 zone=scene_zone,
                 distance_bucket=distance_bucket,
             )
@@ -914,8 +968,8 @@ class LLMActorGatewaySystem:
             world.publish(
                 ActorRegisteredEvent(
                     actor_entity_id=actor_entity,
-                    actor_name=command.actor_name,
-                    scene_id=command.scene_id,
+                    actor_name=actor_name,
+                    scene_id=scene_id,
                     long_term_goals=command.long_term_goals,
                     faction_relations=sanitized_relations,
                     scene_zone=scene_zone,
@@ -928,12 +982,12 @@ class LLMActorGatewaySystem:
                     actor_tags=_normalize_text_tags(command.actor_tags),
                 )
             )
-            if from_scene and from_scene != command.scene_id:
+            if from_scene and from_scene != scene_id:
                 world.publish(
                     ActorLocationChangedEvent(
                         actor_entity_id=actor_entity,
                         from_scene_id=from_scene,
-                        to_scene_id=command.scene_id,
+                        to_scene_id=scene_id,
                         to_zone=scene_zone,
                         to_distance_bucket=distance_bucket.value,
                         source=self.name,
@@ -943,7 +997,7 @@ class LLMActorGatewaySystem:
                 ActorImpulseEvent(
                     actor_entity_id=actor_entity,
                     target_entity_id=None,
-                    scene_id=command.scene_id,
+                    scene_id=scene_id,
                     turn_id=current_turn,
                     impulse=impulse,
                     source=self.name,
@@ -973,7 +1027,7 @@ class LLMActorGatewaySystem:
         return SystemResult(
             self.name,
             len(entities),
-            {"registered": registered},
+            {"registered": registered, "rejected": rejected},
         )
 
 
@@ -987,13 +1041,28 @@ class LLMFactionGatewaySystem:
     def run(self, world: World, entities: list[EntityId]) -> SystemResult:
         """Apply LLM faction payloads to faction state components."""
         updated: list[dict[str, object]] = []
+        rejected: list[dict[str, object]] = []
         for command_entity in entities:
             command = world.get_component(command_entity, LLMFactionUpdateCommand)
+            faction_name = (
+                command.faction_name.strip()
+                if isinstance(command.faction_name, str)
+                else ""
+            )
+            if not faction_name:
+                rejected.append(
+                    {
+                        "command_entity": command_entity,
+                        "reason": "faction_name must not be blank",
+                    }
+                )
+                world.remove_component(command_entity, LLMFactionUpdateCommand)
+                continue
             faction_entity = command.faction_entity_id
             if faction_entity is None:
                 faction_entity = world.create_entity()
 
-            world.add_component(faction_entity, Faction(name=command.faction_name))
+            world.add_component(faction_entity, Faction(name=faction_name))
             world.add_component(
                 faction_entity,
                 FactionHeat(value=max(0, min(100, int(command.heat)))),
@@ -1019,7 +1088,7 @@ class LLMFactionGatewaySystem:
             world.publish(
                 FactionUpdatedEvent(
                     faction_entity_id=faction_entity,
-                    faction_name=command.faction_name,
+                    faction_name=faction_name,
                     heat=max(0, min(100, int(command.heat))),
                     flags=normalized_flags,
                 )
@@ -1033,7 +1102,11 @@ class LLMFactionGatewaySystem:
                 }
             )
 
-        return SystemResult(self.name, len(entities), {"updated": updated})
+        return SystemResult(
+            self.name,
+            len(entities),
+            {"updated": updated, "rejected": rejected},
+        )
 
 
 @dataclass
@@ -1434,6 +1507,8 @@ class LLMRelationshipUpsertSystem:
                 edge_entity = world.create_entity()
 
             bucket = _parse_relationship_bucket(command.bucket)
+            if bucket is None:
+                bucket = RelationshipBucket.ACQUAINTANCE
             normalized_tags = _normalize_text_tags(command.tags)
             score = max(-100, min(100, int(command.score)))
             query_tags = _relationship_query_tags(
@@ -1494,11 +1569,30 @@ class LLMRelationshipQuerySystem:
 
         for command_entity in entities:
             command = world.get_component(command_entity, LLMRelationshipQueryCommand)
-            bucket_filter = _parse_relationship_bucket(command.bucket)
             requested_bucket = command.bucket.strip().lower()
             requested_tag = command.tag.strip().lower()
+            bucket_filter = _parse_relationship_bucket(command.bucket)
 
             edges: list[dict[str, object]] = []
+            if requested_bucket and bucket_filter is None:
+                result_entity = world.create_entity()
+                world.add_component(
+                    result_entity,
+                    LLMRelationshipQueryResult(
+                        command_entity_id=command_entity,
+                        edges=(),
+                    ),
+                )
+                world.remove_component(command_entity, LLMRelationshipQueryCommand)
+                results.append(
+                    {
+                        "command_entity": command_entity,
+                        "result_entity": result_entity,
+                        "edge_count": 0,
+                    }
+                )
+                continue
+
             for edge_entity in world.query(EntityQuery(all_of=(RelationshipEdge,))):
                 edge = world.get_component(edge_entity, RelationshipEdge)
                 include = False
@@ -1580,14 +1674,18 @@ def _normalize_text_tags(tags: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(normalized)
 
 
-def _parse_npc_residency_type(value: str) -> NpcResidencyType:
+def _parse_npc_residency_type(value: object) -> NpcResidencyType:
+    if not isinstance(value, str):
+        return NpcResidencyType.PERSISTENT
     normalized = value.strip().lower()
     if normalized == NpcResidencyType.TRANSIENT.value:
         return NpcResidencyType.TRANSIENT
     return NpcResidencyType.PERSISTENT
 
 
-def _parse_actor_detail_mode(value: str) -> ActorDetailMode:
+def _parse_actor_detail_mode(value: object) -> ActorDetailMode:
+    if not isinstance(value, str):
+        return ActorDetailMode.FULL_PROFILE
     normalized = value.strip().lower()
     if normalized == ActorDetailMode.STAT_BLOCK.value:
         return ActorDetailMode.STAT_BLOCK
@@ -1600,12 +1698,16 @@ def _npc_residency_value(value: NpcResidencyType | str) -> str:
     return str(value).strip().lower()
 
 
-def _parse_relationship_bucket(value: str) -> RelationshipBucket:
+def _parse_relationship_bucket(value: object) -> RelationshipBucket | None:
+    if not isinstance(value, str):
+        return None
     normalized = value.strip().lower()
+    if not normalized:
+        return None
     for bucket in RelationshipBucket:
         if bucket.value == normalized:
             return bucket
-    return RelationshipBucket.ACQUAINTANCE
+    return None
 
 
 def _relationship_bucket_value(value: RelationshipBucket | str) -> str:
@@ -1667,6 +1769,70 @@ def _missing_required_keys(
         if isinstance(key, str) and key not in payload:
             missing.append(key)
     return missing
+
+
+def _schema_validation_errors(
+    payload: dict[str, object], schema: dict[str, object]
+) -> list[str]:
+    errors: list[str] = []
+    errors.extend(_missing_required_keys(payload, schema))
+
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for key, spec in properties.items():
+            if key not in payload:
+                continue
+            if not isinstance(spec, dict):
+                continue
+            expected_type = spec.get("type")
+            if not expected_type:
+                continue
+            if isinstance(expected_type, str):
+                expected_types = (expected_type,)
+            elif isinstance(expected_type, list):
+                expected_types = tuple(
+                    item for item in expected_type if isinstance(item, str)
+                )
+            else:
+                continue
+
+            value = payload.get(key)
+            if value is None and "null" in expected_types:
+                continue
+            if not _matches_json_schema_type(value, expected_types):
+                errors.append(f"{key} expected {expected_type}")
+
+    if schema.get("additionalProperties") is False and isinstance(properties, dict):
+        extra = set(payload.keys()) - set(properties.keys())
+        if extra:
+            errors.append(f"unexpected keys: {sorted(extra)}")
+
+    return errors
+
+
+def _matches_json_schema_type(value: object, expected_types: tuple[str, ...]) -> bool:
+    for expected in expected_types:
+        if expected == "string" and isinstance(value, str):
+            return True
+        if expected == "boolean" and isinstance(value, bool):
+            return True
+        if (
+            expected == "integer"
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+        ):
+            return True
+        if expected == "number" and isinstance(value, (int, float)) and not isinstance(
+            value, bool
+        ):
+            return True
+        if expected == "object" and isinstance(value, dict):
+            return True
+        if expected == "array" and isinstance(value, (list, tuple)):
+            return True
+        if expected == "null" and value is None:
+            return True
+    return False
 
 
 def _select_goal(agency: ActorAgency, turn_id: int, actor_entity: int) -> str:
@@ -1881,8 +2047,10 @@ def _sync_kernel_location_for_player(
         world.add_component(kernel_entity, replace(state, current_location=to_scene_id))
 
 
-def _parse_distance_bucket(value: str) -> DistanceBucket:
+def _parse_distance_bucket(value: object) -> DistanceBucket:
     """Parse a string into a known distance bucket; default to ``NEAR``."""
+    if not isinstance(value, str):
+        return DistanceBucket.NEAR
     normalized = value.strip().lower()
     for bucket in DistanceBucket:
         if bucket.value == normalized:

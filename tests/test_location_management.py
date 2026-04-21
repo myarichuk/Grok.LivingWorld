@@ -129,3 +129,58 @@ def test_actor_location_change_updates_occupancy_and_player_kernel_location() ->
     index = world.get_component(index_entity, LocationIndex)
     assert index.scene_to_entity_id["docks"] == docks
     assert index.scene_to_entity_id["tavern"] == tavern
+
+
+def test_location_registration_rejects_blank_scene_id() -> None:
+    world = World()
+    actor = world.create_entity()
+    world.add_component(actor, NpcActor("Rook"))
+
+    command = world.create_entity()
+    world.add_component(
+        command,
+        RegisterActorLocationCommand(
+            actor_entity_id=actor,
+            scene_id="   ",
+        ),
+    )
+
+    result = LocationRegistrationSystem().run(world, [command])
+
+    assert result.payload["registered"] == []
+    assert result.payload["rejected"][0]["reason"] == "scene_id must not be blank"
+    assert not world.has_component(actor, ScenePresence)
+    assert world.query(EntityQuery(all_of=(Location,))) == []
+
+
+def test_actor_location_change_rejects_blank_destination_scene_id() -> None:
+    world = World()
+    actor = world.create_entity()
+    world.add_component(actor, NpcActor("Rook"))
+    world.add_component(actor, ScenePresence(scene_id="docks"))
+    world.add_component(
+        actor,
+        ScenePosition(
+            scene_id="docks",
+            zone="dock_gate",
+            distance_bucket=DistanceBucket.NEAR,
+        ),
+    )
+
+    move = world.create_entity()
+    world.add_component(
+        move,
+        MoveActorLocationCommand(
+            actor_entity_id=actor,
+            to_scene_id="  ",
+        ),
+    )
+
+    result = ActorLocationChangeSystem().run(world, [move])
+
+    assert result.payload["moved"] == []
+    assert (
+        result.payload["rejected"][0]["reason"]
+        == "destination scene_id must not be blank"
+    )
+    assert world.get_component(actor, ScenePresence).scene_id == "docks"
