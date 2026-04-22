@@ -166,7 +166,7 @@ class World:
         for stored_type, entity_components in self._components.items():
             if stored_type is component_type:
                 continue
-            if issubclass(stored_type, component_type):
+            if _is_safe_subclass(stored_type, component_type):
                 component = entity_components.get(entity_id)
                 if component is not None:
                     matched_components.append((stored_type, component))
@@ -193,7 +193,7 @@ class World:
             for stored_type, entity_components in self._components.items()
             if (
                 stored_type is not component_type
-                and issubclass(stored_type, component_type)
+                and _is_safe_subclass(stored_type, component_type)
             )
         )
 
@@ -224,7 +224,7 @@ class World:
         """
         matched_types: list[type[Any]] = []
         for stored_type, entity_components in self._components.items():
-            if not issubclass(stored_type, component_type):
+            if not _is_safe_subclass(stored_type, component_type):
                 continue
             if entity_id in entity_components:
                 matched_types.append(stored_type)
@@ -367,7 +367,7 @@ class World:
     def _entities_with_component_type(self, component_type: type[Any]) -> set[EntityId]:
         entity_ids: set[EntityId] = set()
         for stored_type, entity_components in self._components.items():
-            if stored_type is component_type or issubclass(stored_type, component_type):
+            if stored_type is component_type or _is_safe_subclass(stored_type, component_type):
                 entity_ids.update(entity_components.keys())
         return entity_ids
 
@@ -481,6 +481,13 @@ class World:
 
         self._next_entity_id = max(self._next_entity_id, max_entity_id + 1)
         self._version = max(self._version, max_turn)
+
+
+def _is_safe_subclass(cls: type[Any], classinfo: type[Any] | Any) -> bool:
+    try:
+        return issubclass(cls, classinfo)
+    except TypeError:
+        return False
 
 
 def _component_storage_key(entity_id: EntityId, component_type_name: str) -> str:
